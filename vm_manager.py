@@ -1,0 +1,954 @@
+import os
+import subprocess
+import sys
+import shutil
+import uuid
+import random
+import re
+import time
+import socket
+import shlex
+
+# --- SUDO CHECK: This script now requires root privileges for direct input access ---
+if os.geteuid() != 0:
+    print("\n\033[91m❌ Error: This script must be run with sudo for direct hardware input access.\033[0m")
+    print("\033[93m   Please run it as: sudo python vm_manager.py\033[0m")
+    sys.exit(1)
+
+# --- Configuration (System-Wide) ---
+CONFIG = {
+    "VMS_DIR": "vms",
+    "VM_MEM": "4096M",
+    "VM_CPU": "2",
+    "BASE_DISK_SIZE": "20",
+    "QEMU_BINARY": "qemu-system-x86_64",
+    "UEFI_CODE": "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
+    "UEFI_VARS_TEMPLATE": "/usr/share/edk2/x64/OVMF_VARS.4m.fd",
+    "QEMU_DISPLAY": ["-display", "gtk,gl=on,show-cursor=on,grab-on-hover=on"],
+    "SHARED_DIR_MOUNT_TAG": "host_share",
+}
+
+# --- Distro "Knowledge Base" for Dependency Checking ---
+DISTRO_INFO = {
+    "arch": {"cmd": "pacman -Syu --needed", "pkgs": {"qemu": "qemu-desktop", "ovmf": "edk2-ovmf"}, "grub_update": "sudo grub-mkconfig -o /boot/grub/grub.cfg", "initramfs_update": "sudo mkinitcpio -P"},
+    "manjaro": {"cmd": "pacman -Syu --needed", "pkgs": {"qemu": "qemu-desktop", "ovmf": "edk2-ovmf"}, "grub_update": "sudo update-grub", "initramfs_update": "sudo mkinitcpio -P"},
+    "debian": {"cmd": "apt update && apt install -y", "pkgs": {"qemu": "qemu-system-x86 qemu-utils", "ovmf": "ovmf"}, "grub_update": "sudo update-grub", "initramfs_update": "sudo update-initramfs -u"},
+    "ubuntu": {"cmd": "apt update && apt install -y", "pkgs": {"qemu": "qemu-system-x86 qemu-utils", "ovmf": "ovmf"}, "grub_update": "sudo update-grub", "initramfs_update": "sudo update-initramfs -u"},
+    "pop": {"cmd": "apt update && apt install -y", "pkgs": {"qemu": "qemu-system-x86 qemu-utils", "ovmf": "ovmf"}, "grub_update": "Pop!_OS uses systemd-boot, please update kernel parameters manually.", "initramfs_update": "sudo update-initramfs -u"},
+    "fedora": {"cmd": "dnf install -y", "pkgs": {"qemu": "qemu-kvm", "ovmf": "edk2-ovmf"}, "grub_update": "sudo grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg", "initramfs_update": "sudo dracut -f --kver `uname -r`"},
+}
+
+# --- Style and Color ---
+class Style:
+    HEADER = '\033[95m'; OKBLUE = '\033[94m'; OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'; WARNING = '\033[93m'; FAIL = '\033[91m'
+    ENDC = '\033[0m'; BOLD = '\033[1m'
+
+def print_header(text): print(f"\n{Style.HEADER}{Style.BOLD}--- {text} ---{Style.ENDC}")
+def print_info(text): print(f"{Style.OKCYAN}ℹ️  {text}{Style.ENDC}")
+def print_success(text): print(f"{Style.OKGREEN}✅ {text}{Style.ENDC}")
+def print_warning(text): print(f"{Style.WARNING}⚠️  {text}{Style.ENDC}")
+def print_error(text): print(f"{Style.FAIL}❌ {text}{Style.ENDC}", file=sys.stderr)
+def clear_screen(): os.system('cls' if os.name == 'nt' else 'clear')
+
+# --- File and Command Operations ---
+def run_command_live(cmd_list, as_root=True, check=True):
+    """Runs a command and prints its output live."""
+    if as_root and os.geteuid() != 0:
+        cmd_list.insert(0, "sudo")
+    print(f"\n{Style.OKBLUE}▶️  Executing: {' '.join(shlex.quote(s) for s in cmd_list)}{Style.ENDC}")
+    try:
+        process = subprocess.Popen(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        output_lines = []
+        for line in iter(process.stdout.readline, ''):
+            print(f"  {line.strip()}", flush=True)
+            output_lines.append(line)
+        process.stdout.close()
+        return_code = process.wait()
+        if check and return_code != 0:
+            raise subprocess.CalledProcessError(return_code, cmd_list, output="".join(output_lines))
+        return "".join(output_lines)
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print_error(f"Command failed: {e}")
+        if hasattr(e, 'output'):
+            print_error(f"Output:\n{e.output}")
+        return None
+
+def _create_launcher_script(script_path, commands):
+    """Dynamically creates a shell script to run a series of commands in a new terminal."""
+    with open(script_path, 'w') as f:
+        f.write("#!/bin/bash\nset -e\n")
+        f.write(f"echo -e '{Style.HEADER}--- VM LAUNCHER (This terminal will close when the VM shuts down) ---{Style.ENDC}'\n\n")
+        for title, cmd_list in commands:
+            final_cmd = "exec " if cmd_list == commands[-1][1] else ""
+            quoted_cmd = ' '.join(shlex.quote(s) for s in cmd_list)
+            f.write(f"echo -e '{Style.OKBLUE}▶️  {title}...{Style.ENDC}'\n{final_cmd}{quoted_cmd}\n\n")
+    os.chmod(script_path, 0o755)
+
+def get_terminal_command(shell_script_path):
+    """Returns the full command list to launch a command in a new terminal."""
+    terminals = {'konsole': '-e', 'gnome-terminal': '--', 'xfce4-terminal': '-x', 'xterm': '-e'}
+    for term, arg in terminals.items():
+        if shutil.which(term): return [term, arg, 'bash', shell_script_path]
+    return None
+
+def launch_in_new_terminal_and_wait(commands):
+    """Generates a launcher script and executes it in a new terminal, WAITING for it to complete."""
+    script_path = f"/tmp/vm_launcher_{os.getpid()}_{random.randint(1000,9999)}.sh"
+    try:
+        _create_launcher_script(script_path, commands)
+        terminal_cmd = get_terminal_command(script_path)
+        if not terminal_cmd:
+            print_error("No supported terminal found! Please run the script manually from the launcher file.")
+            print_info(f"Launcher script created at: {script_path}"); return False
+
+        print_info(f"Launching VM in a new terminal window... The script will wait for it to close.")
+        process = subprocess.Popen(terminal_cmd)
+        process.wait()
+        print_info("VM process has terminated.")
+        return True
+    finally:
+        if os.path.exists(script_path):
+            time.sleep(1)
+            os.remove(script_path)
+
+def remove_file(path):
+    try: os.remove(path); print_success(f"Removed: {path}"); return True
+    except OSError as e: print_error(f"Could not remove file {path}: {e}"); return False
+def remove_dir(path):
+    try: shutil.rmtree(path); print_success(f"Deleted VM: {os.path.basename(path)}"); return True
+    except OSError as e: print_error(f"Could not delete directory {path}: {e}"); return False
+
+# --- Helper Functions ---
+def get_vm_paths(vm_name):
+    vm_dir = os.path.abspath(os.path.join(CONFIG['VMS_DIR'], vm_name))
+    return {"dir": vm_dir, "base": os.path.join(vm_dir, "base.qcow2"), "overlay": os.path.join(vm_dir, "overlay.qcow2"), "seed": os.path.join(vm_dir, "uefi-seed.fd"), "instance": os.path.join(vm_dir, "uefi-instance.fd"), "session_id": os.path.join(vm_dir, "session.id"), "shared_dir": os.path.join(vm_dir, "shared"), "pid_file": os.path.join(vm_dir, "qemu.pid"), "session_info": os.path.join(vm_dir, "session.info")}
+def select_from_list(items, prompt, display_key=None):
+    for i, item in enumerate(items):
+        display_text = item[display_key] if display_key and isinstance(item, dict) else os.path.basename(item)
+        print(f"  {Style.OKBLUE}{i+1}.{Style.ENDC} {display_text}")
+    while True:
+        try:
+            choice = int(input(f"{Style.BOLD}{prompt} [1-{len(items)}]: {Style.ENDC}").strip())
+            if 1 <= choice <= len(items): return items[choice - 1]
+        except ValueError: pass
+        print_warning("Invalid selection.")
+def select_vm(action_text, running_only=False):
+    print_header(f"Select VM to {action_text}"); vms_dir = CONFIG['VMS_DIR']
+    if not os.path.isdir(vms_dir) or not os.listdir(vms_dir): print_error("No VMs found to list."); return None
+    vm_list = sorted([d for d in os.listdir(vms_dir) if os.path.isdir(os.path.join(vms_dir, d))])
+    if running_only: vm_list = [vm for vm in vm_list if is_vm_running(vm)]
+    if not vm_list: print_error("No running VMs found." if running_only else "No VMs found."); return None
+    return select_from_list(vm_list, "Choose a VM")
+def get_vm_config(defaults):
+    config = {}; print_header("Configure Virtual Machine")
+    while True:
+        mem = input(f"{Style.BOLD}Enter Memory (e.g., 4G) [default: {defaults['VM_MEM']}]: {Style.ENDC}").strip().upper() or defaults['VM_MEM']
+        if re.match(r"^\d+[MG]$", mem): config['VM_MEM'] = mem; break
+        else: print_warning("Invalid format. Use a number followed by 'M' or 'G'.")
+    while True:
+        cpu = input(f"{Style.BOLD}Enter CPU cores [default: {defaults['VM_CPU']}]: {Style.ENDC}").strip() or defaults['VM_CPU']
+        if cpu.isdigit() and int(cpu) > 0: config['VM_CPU'] = cpu; break
+        else: print_warning("Invalid input.")
+    return config
+def find_input_devices():
+    base_path = "/dev/input/by-id/";
+    if not os.path.isdir(base_path): print_error(f"Input device directory not found: {base_path}"); return None
+    mice = [os.path.join(base_path, name) for name in sorted(os.listdir(base_path)) if "event-mouse" in name]
+    kbds = [os.path.join(base_path, name) for name in sorted(os.listdir(base_path)) if "event-kbd" in name]
+    if not mice or not kbds: print_error("No mouse or keyboard event devices found in /dev/input/by-id/"); return None
+    print_header("Select Input Devices for Passthrough")
+    selected_mouse = select_from_list(mice, "Choose a mouse")
+    selected_kbd = select_from_list(kbds, "Choose a keyboard")
+    return {"mouse": selected_mouse, "keyboard": selected_kbd}
+def find_iso_path():
+    print_header("Select Installation ISO"); isos = [f for f in os.listdir('.') if f.endswith('.iso')]
+    if not isos: print_error("No .iso file found in the current directory."); return None
+    iso_path = select_from_list(isos, "Choose an ISO") if len(isos) > 1 else isos[0]
+    iso_abs_path = os.path.abspath(iso_path)
+    print_info(f"Using ISO: {iso_abs_path}"); return iso_abs_path
+def find_host_dns():
+    try:
+        with open("/etc/resolv.conf", "r") as f:
+            for line in f:
+                if line.strip().startswith("nameserver"): return line.strip().split()[1]
+    except FileNotFoundError: pass
+    return "8.8.8.8"
+def find_unused_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0)); return s.getsockname()[1]
+def check_dependencies():
+    print_header("System Dependency Check")
+    distro_id = detect_distro()
+    info = DISTRO_INFO.get(distro_id)
+    if not info:
+        print_warning(f"Unsupported host distro ('{distro_id}'). Please manually install 'qemu' and 'ovmf/edk2' packages.")
+        return shutil.which(CONFIG['QEMU_BINARY']) and os.path.exists(CONFIG['UEFI_CODE'])
+    all_ok, missing_pkgs = True, []
+    if not shutil.which(CONFIG['QEMU_BINARY']): missing_pkgs.append(info['pkgs']['qemu'])
+    uefi_path = "/usr/share/OVMF/OVMF_CODE.fd" if distro_id in ["debian", "ubuntu"] else CONFIG['UEFI_CODE']
+    if not os.path.exists(uefi_path): missing_pkgs.append(info['pkgs']['ovmf'])
+    if not missing_pkgs: print_success("All required packages are installed."); return True
+    print_error(f"Missing required software for host distro '{distro_id}'.")
+    install_cmd = f"sudo {info['cmd']} {' '.join(sorted(list(set(missing_pkgs))))}"
+    print_info(f"To fix this, the recommended command is:\n  {Style.BOLD}{install_cmd}{Style.ENDC}")
+    if input("Run this command now? (y/N): ").strip().lower() == 'y':
+        if os.system(install_cmd) == 0: print_success("\nInstallation successful. Please re-run the script.")
+        else: print_error("\nInstallation failed.")
+        sys.exit()
+    return False
+def detect_distro():
+    try:
+        with open("/etc/os-release") as f:
+            for line in f:
+                if line.startswith("ID="): return line.strip().split("=")[1].lower().strip('"')
+    except FileNotFoundError: return None
+def get_running_vm_info(vm_name):
+    paths = get_vm_paths(vm_name)
+    pid_file, session_info_file = paths['pid_file'], paths['session_info']
+    if not os.path.exists(pid_file): return None
+    try:
+        with open(pid_file, 'r') as f: pid = int(f.read().strip())
+        os.kill(pid, 0);
+        with open(session_info_file, 'r') as f: ssh_port = int(f.read().strip())
+        return {'pid': pid, 'port': ssh_port}
+    except (IOError, ValueError, ProcessLookupError, OSError):
+        for f in [pid_file, session_info_file]:
+            if os.path.exists(f): remove_file(f)
+        return None
+def is_vm_running(vm_name): return get_running_vm_info(vm_name) is not None
+
+# --- Main Application Functions ---
+def create_new_vm():
+    clear_screen(); print_header("Create New VM");
+    if not check_dependencies(): return
+    while True:
+        vm_name = input(f"{Style.BOLD}Enter a short name for new VM (e.g., arch-kde): {Style.ENDC}").strip()
+        if not re.match(r"^[a-zA-Z0-9_-]+$", vm_name): print_warning("Invalid name.")
+        elif os.path.exists(os.path.join(CONFIG['VMS_DIR'], vm_name)): print_warning("A VM with this name already exists.")
+        else: break
+    paths = get_vm_paths(vm_name); iso_path = find_iso_path()
+    if not iso_path: return
+    while True:
+        disk = input(f"{Style.BOLD}Enter base disk size (GB) [default: {CONFIG['BASE_DISK_SIZE']}]: {Style.ENDC}").strip() or CONFIG['BASE_DISK_SIZE']
+        if disk.isdigit() and int(disk) > 0: break
+        else: print_warning("Invalid input.")
+    vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
+    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {}, {'uuid':str(uuid.uuid4()), 'mac': ''}, "", 0, iso_path=iso_path)
+    commands_to_run = [
+        ("Creating directory structure", ["mkdir", "-p", paths['dir'], paths['shared_dir']]),
+        ("Preparing UEFI seed", ["cp", CONFIG['UEFI_VARS_TEMPLATE'], paths['seed']]),
+        (f"Creating {disk}G base image", ["qemu-img", "create", "-f", "qcow2", paths['base'], f"{disk}G"]),
+        ("Booting from ISO (Install your OS, then simply close this terminal window)", qemu_cmd) ]
+    launch_in_new_terminal_and_wait(commands_to_run)
+
+def _get_qemu_command(vm_name, vm_settings, input_devices, ids, host_dns, ssh_port, passthrough_info=None, iso_path=None):
+    paths = get_vm_paths(vm_name)
+    qemu_cmd = [ CONFIG["QEMU_BINARY"], "-enable-kvm", "-m", vm_settings["VM_MEM"], "-smp", vm_settings["VM_CPU"],
+        "-uuid", ids['uuid'], "-drive", f"if=pflash,format=raw,readonly=on,file={CONFIG['UEFI_CODE']}",
+        "-drive", f"if=pflash,format=raw,file={paths['seed'] if iso_path else paths['instance']}",
+        "-fsdev", f"local,security_model=mapped-xattr,id=fsdev0,path={paths['shared_dir']}",
+        "-device", f"virtio-9p-pci,fsdev=fsdev0,mount_tag={CONFIG['SHARED_DIR_MOUNT_TAG']}",
+        "-pidfile", paths['pid_file'] ]
+
+    if ssh_port > 0:
+        qemu_cmd.extend(["-netdev", f"user,id=n1,dns={host_dns},hostfwd=tcp::{ssh_port}-:22", "-device", f"virtio-net-pci,netdev=n1,mac={ids['mac']}"])
+    else:
+         qemu_cmd.extend(["-netdev", "user,id=n1", "-device", "virtio-net-pci,netdev=n1"])
+
+    if passthrough_info:
+        is_gpu_passthrough = any(d.get('class_code') == '0300' for d in passthrough_info['devices'].values())
+        if is_gpu_passthrough:
+            qemu_cmd.extend(["-cpu", "host,kvm=off,hv_vendor_id=null" if passthrough_info['vendor'] == "NVIDIA" else "host"])
+            qemu_cmd.append("-nographic")
+            if input_devices:
+                qemu_cmd.extend(["-object", f"input-linux,id=mouse,evdev={input_devices['mouse']}", "-object", f"input-linux,id=kbd,evdev={input_devices['keyboard']},grab_all=on,repeat=on"])
+
+            is_vga_set = False
+            primary_gpu_pci = passthrough_info.get('vga_pci')
+            for pci_id in passthrough_info['pci_ids']:
+                if primary_gpu_pci == pci_id and not is_vga_set:
+                     qemu_cmd.extend(["-device", f"vfio-pci,host={pci_id},x-vga=on,rombar=0"])
+                     is_vga_set = True
+                else:
+                     qemu_cmd.extend(["-device", f"vfio-pci,host={pci_id}"])
+        else: # Passthrough for non-GPU devices (e.g. USB controller)
+            qemu_cmd.extend(["-cpu", "host", "-vga", "virtio", *CONFIG["QEMU_DISPLAY"]])
+            for pci_id in passthrough_info['pci_ids']:
+                qemu_cmd.extend(["-device", f"vfio-pci,host={pci_id}"])
+        qemu_cmd.extend(["-drive", f"file={paths['base']},if=virtio"])
+    elif iso_path: # Standard Install
+        qemu_cmd.extend(["-cpu", "host", "-vga", "virtio", *CONFIG["QEMU_DISPLAY"]])
+        qemu_cmd.extend(["-drive", f"file={paths['base']},if=virtio", "-cdrom", iso_path])
+    else: # Standard Run
+        qemu_cmd.extend(["-cpu", "host", "-vga", "virtio", *CONFIG["QEMU_DISPLAY"]])
+        qemu_cmd.extend(["-drive", f"file={paths['overlay']},if=virtio,cache=writeback"])
+
+    return qemu_cmd
+
+def run_or_nuke_vm(vm_name, is_fresh):
+    session_type = "Nuke & Boot" if is_fresh else "Run / Resume"; print_header(f"{session_type}: '{vm_name}'")
+    if is_vm_running(vm_name): print_error(f"VM '{vm_name}' is already running."); return
+    paths = get_vm_paths(vm_name)
+    if is_fresh:
+        if not _nuke_session_files(paths): return
+    elif not os.path.exists(paths['overlay']):
+        print_info("No existing session found. Starting a fresh one instead."); is_fresh = True
+
+    vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
+    host_dns = find_host_dns(); ssh_port = find_unused_port()
+
+    if is_fresh or not os.path.exists(paths['session_id']):
+        new_uuid, new_mac = str(uuid.uuid4()), f"52:54:00:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}"
+        print_header("Generating New Session Identifiers"); print_info(f"System UUID: {Style.BOLD}{new_uuid}{Style.ENDC}\nMAC Address: {Style.BOLD}{new_mac}{Style.ENDC}")
+        with open(paths['session_id'], 'w') as f: f.write(f"{new_uuid}\n{new_mac}\n")
+        ids = {'uuid': new_uuid, 'mac': new_mac}
+    else:
+        ids = {'uuid': str(uuid.uuid4()), 'mac': f"52:54:00:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}"}
+        if os.path.exists(paths['session_id']):
+            with open(paths['session_id'], 'r') as f: lines = f.readlines();
+            if len(lines) >= 2: ids['uuid'], ids['mac'] = lines[0].strip(), lines[1].strip()
+        print_info(f"Resuming with System UUID: {Style.BOLD}{ids['uuid']}{Style.ENDC}")
+
+    if not os.path.exists(paths['instance']):
+        run_command_live(["cp", paths['seed'], paths['instance']], as_root=False, check=True)
+    if not os.path.exists(paths['overlay']):
+        run_command_live(["qemu-img", "create", "-f", "qcow2", "-b", paths['base'], "-F", "qcow2", paths['overlay']], as_root=False, check=True)
+
+    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {}, ids, host_dns, ssh_port)
+    launch_in_new_terminal_and_wait([("Booting VM", qemu_cmd)])
+
+def _nuke_session_files(paths):
+    files_to_nuke = [paths['overlay'], paths['instance'], paths['session_id'], paths['pid_file'], paths['session_info']]
+    if not any(os.path.exists(f) for f in files_to_nuke):
+        print_info("No session files found to nuke for this VM."); return True
+    print_warning(f"You are about to permanently delete the current session for '{os.path.basename(paths['dir'])}'.")
+    if input("Are you sure? (y/N): ").strip().lower() != 'y': print_info("Operation cancelled."); return False
+    if is_vm_running(os.path.basename(paths['dir'])):
+        print_info("VM is running, stopping it first..."); stop_vm(vm_name=os.path.basename(paths['dir']), force=True)
+    for f in files_to_nuke:
+        if os.path.exists(f): remove_file(f)
+    print_success("Nuke operation complete."); return True
+
+def nuke_vm_completely():
+    clear_screen(); vm_name = select_vm("Nuke Completely")
+    if not vm_name: return
+    if is_vm_running(vm_name): print_error(f"Cannot nuke '{vm_name}' while it is running. Please stop it first."); return
+    print_warning(f"This will permanently delete the entire VM '{vm_name}', including its base image.\nThis action CANNOT be undone.")
+    confirm = input(f"To confirm, please type the name of the VM ({vm_name}): ").strip()
+    if confirm == vm_name: remove_dir(get_vm_paths(vm_name)['dir'])
+    else: print_error("Confirmation failed. Aborting.")
+
+def print_ssh_instructions(port, vm_name):
+    print_header(f"Access Guide for '{vm_name}'"); print_info(f"SSH access enabled on host port: {Style.BOLD}{port}{Style.ENDC}")
+    print_info("To connect to the VM's shell from your HOST, run:"); print(f"  {Style.BOLD}ssh -p {port} your_vm_user@localhost{Style.ENDC}")
+
+def stop_vm(vm_name=None, force=False):
+    if not vm_name:
+        clear_screen(); vm_name = select_vm("Stop", running_only=True)
+    if not vm_name: return
+    vm_info = get_running_vm_info(vm_name)
+    if vm_info:
+        print_info(f"Stopping VM '{vm_name}' (PID: {vm_info['pid']})...")
+        try: os.kill(vm_info['pid'], 15); print_success(f"Stop signal sent to VM '{vm_name}'.")
+        except ProcessLookupError: print_warning("Process already stopped.")
+        except Exception as e: print_error(f"Failed to send stop signal to VM: {e}")
+        time.sleep(1)
+        paths = get_vm_paths(vm_name)
+        for f in [paths['pid_file'], paths['session_info']]:
+            if os.path.exists(f): remove_file(f)
+    elif not force: print_error(f"Could not get running info for '{vm_name}'.")
+
+def transfer_files():
+    clear_screen(); vm_name = select_vm("Transfer Files with", running_only=True)
+    if not vm_name: return
+    vm_info = get_running_vm_info(vm_name)
+    if not vm_info: print_error(f"VM '{vm_name}' is not running or its PID file is invalid."); return
+    print_header(f"File Transfer for '{vm_name}'")
+    while True:
+        direction = input(f"{Style.BOLD}Direction? [1] Host to VM, [2] VM to Host: {Style.ENDC}").strip()
+        if direction in ["1", "2"]: break
+        else: print_warning("Invalid choice.")
+    while True:
+        local_path = os.path.expanduser(input(f"{Style.BOLD}Enter path on LOCAL host: {Style.ENDC}").strip())
+        if os.path.exists(local_path): break
+        else: print_warning(f"Local path not found: '{local_path}'. Please check typos.")
+    remote_path = input(f"{Style.BOLD}Enter full path on REMOTE vm (use quotes if needed): {Style.ENDC}").strip()
+    vm_user = input(f"{Style.BOLD}Enter username inside the VM: {Style.ENDC}").strip()
+    port = vm_info['port']; src, dest = None, None
+    if direction == "1": src, dest = local_path, f"{vm_user}@localhost:{remote_path}"
+    else: src, dest = f"{vm_user}@localhost:{remote_path}", local_path
+    scp_cmd = ["scp", "-r", "-P", str(port), src, dest]
+    run_command_live(scp_cmd)
+
+# --- GPU Passthrough Section ---
+def _run_command(cmd, as_root=False):
+    try:
+        if as_root and os.geteuid() != 0: cmd.insert(0, "sudo")
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        output = ""
+        if hasattr(e, 'stdout') and e.stdout: output += e.stdout.strip()
+        if hasattr(e, 'stderr') and e.stderr: output += e.stderr.strip()
+        return output
+
+def _check_system_type():
+    chassis_type = _run_command(["cat", "/sys/class/dmi/id/chassis_type"])
+    return chassis_type in ['8', '9', '10', '11', '12', '14', '30', '31', '32']
+
+def _fix_grub_cmdline(param_to_add):
+    grub_file = "/etc/default/grub"
+    if not os.path.exists(grub_file):
+        print_error(f"{grub_file} not found. Cannot apply GRUB fix automatically."); return
+
+    backup_file = f"{grub_file}.vm_manager.bak"
+    if not os.path.exists(backup_file):
+        print_info(f"Modifying '{grub_file}'. A backup will be saved to '{backup_file}'.")
+        try:
+            shutil.copy(grub_file, backup_file)
+            print_success(f"Original file backed up to: {backup_file}")
+        except Exception as e:
+            print_error(f"Failed to create backup: {e}"); return
+
+    with open(grub_file, 'r') as f: original_content = f.read()
+    if param_to_add in original_content:
+        print_info(f"Parameter '{param_to_add}' already exists in GRUB config. No changes needed."); return
+
+    new_content = re.sub(r'^(GRUB_CMDLINE_LINUX_DEFAULT=")([^"]*)(")', rf'\1\2 {param_to_add}\3', original_content, 1, re.M)
+
+    if new_content == original_content:
+        print_error("Could not automatically modify GRUB_CMDLINE_LINUX_DEFAULT. Please add it manually."); return
+
+    print_info(f"Writing new configuration to {grub_file}...")
+    try:
+        with open(grub_file, 'w') as f: f.write(new_content)
+        print_success("GRUB configuration updated.")
+        distro = detect_distro()
+        update_cmd = DISTRO_INFO.get(distro, {}).get("grub_update", "sudo update-grub (or equivalent for your OS)")
+        print_warning("ACTION REQUIRED: You must now apply this change and reboot.")
+        print_info(f"Run the command: {Style.BOLD}{update_cmd}{Style.ENDC} and then {Style.BOLD}sudo reboot{Style.ENDC}")
+    except Exception as e:
+        print_error(f"Failed to write to {grub_file}: {e}. Restoring from backup."); shutil.copy(backup_file, grub_file)
+
+def _check_iommu_support():
+    print_header("2. CPU & BIOS IOMMU Check")
+    cpu_info = _run_command(["lscpu"]); vendor = "Intel" if "GenuineIntel" in cpu_info else "AMD"
+    virt_feature = "VT-x" if vendor == "Intel" else "svm"; iommu_feature = "VT-d" if vendor == "Intel" else "AMD-Vi"
+
+    if virt_feature not in cpu_info:
+        print_error(f"FATAL: CPU does not support virtualization ({virt_feature})."); return False
+    print_success(f"CPU supports virtualization ({virt_feature}).")
+
+    iommu_groups_path = "/sys/kernel/iommu_groups/"
+    if os.path.exists(iommu_groups_path) and len(os.listdir(iommu_groups_path)) > 0:
+        print_success(f"IOMMU ({iommu_feature}) is active in the kernel.")
+        return True
+
+    print_error(f"FAIL: IOMMU ({iommu_feature}) does not appear to be active in the kernel.")
+    print_info("This is usually because it's disabled in the BIOS/UEFI or the required kernel parameter is missing.")
+
+    param = "intel_iommu=on" if vendor == "Intel" else "amd_iommu=on"
+    if input(f"Would you like this tool to attempt to add the '{param}' kernel parameter to GRUB? (y/N): ").lower() == 'y':
+        _fix_grub_cmdline(param)
+        return False
+
+    if input("Skip this check and proceed anyway? (Not Recommended) (y/N): ").lower() == 'y':
+        return 'skipped'
+
+    return False
+
+def _find_pci_devices_by_class(class_code, name_singular, name_plural):
+    lspci_out = _run_command(["lspci", "-nnk"])
+    if not lspci_out:
+        return []
+
+    devices = []
+    pci_regex = re.compile(
+        r"^([\da-f:.]+)\s"                      # 1: PCI Address (e.g., 0000:01:00.0)
+        r".*?\[" + class_code + r"\]:\s+"        # Match up to the desired class code
+        r"(.*?)\s+"                              # 2: Device Name
+        r"\[([\da-f]{4}:[\da-f]{4})\]"            # 3: Vendor/Device ID
+        r"(?:.|\n)*?"                            # Non-greedy match for subsequent lines
+        r"^\s+Kernel driver in use:\s+(\S+)",    # 4: Kernel Driver (must exist)
+        re.MULTILINE
+    )
+
+    for match in pci_regex.finditer(lspci_out):
+        pci, name, vdid, drv = match.groups()
+        devices.append({
+            "pci": pci.strip(), "name": name.strip(), "ids": vdid.strip(), "driver": drv.strip(),
+            "class_code": class_code, "display": f"[{pci.strip()}] {name.strip()} (driver: {drv.strip()})"
+        })
+
+    return devices
+
+def _get_gpus(): return _find_pci_devices_by_class("0300", "GPU", "GPUs")
+def _get_usb_controllers(): return _find_pci_devices_by_class("0c03", "USB Controller", "USB Controllers")
+def _get_nvme_drives(): return _find_pci_devices_by_class("0108", "NVMe Drive", "NVMe Drives")
+
+def _select_guest_gpu():
+    print_header("3. GPU Detection and Strategy")
+    gpus = _get_gpus()
+
+    if not gpus:
+        print_error("FATAL: No 'VGA compatible controllers' with PCI Class [0300] and an active kernel driver were found.")
+        print_info(f"This script expects at least one GPU to be identified with the standard '{Style.BOLD}VGA compatible controller [0300]{Style.ENDC}' classification and have a driver (e.g., 'nvidia', 'i915', 'amdgpu') loaded by the host.")
+        print_info("This can happen if drivers are misconfigured, blacklisted, or if the GPU is in an unusual state.")
+
+        print_header("Running Diagnostic Scan for Other Display Controllers")
+        other_display_devices = []
+        other_classes_to_check = {"0302": "3D Controller", "0380": "Other display controller"}
+        for code, name in other_classes_to_check.items():
+            other_display_devices.extend(_find_pci_devices_by_class(code, name, name + "s"))
+
+        if other_display_devices:
+            print_warning("Diagnostic scan found the following non-VGA display devices:")
+            for dev in other_display_devices:
+                class_desc = other_classes_to_check.get(dev['class_code'], "Unknown")
+                print(f"  - {dev['display']} ({class_desc} [{dev['class_code']}])")
+            print_info("\nPassthrough may still be possible with these devices, but it's an advanced case.")
+            print_info("This script cannot automatically proceed as it relies on the [0300] class for safe GPU identification.")
+        else:
+            print_error("Diagnostic scan did not find any other common display controller types.")
+            print_info(f"Please run '{Style.BOLD}lspci -nnk{Style.ENDC}' in your terminal and check for any devices in Class 03 with a 'Kernel driver in use' line.")
+
+        return None
+
+    print_info(f"Found {len(gpus)} GPU(s):")
+    for gpu in gpus: print(f"  - {gpu['display']}")
+    if len(gpus) == 1:
+        gpu = gpus[0]; is_apu = "APU" in gpu['name'] or ("Vega" in gpu['name'] and "Radeon" in gpu['name'])
+        vendor = "NVIDIA" if gpu['ids'].startswith("10de") else "AMD" if gpu['ids'].startswith("1002") else "Intel"
+        if vendor in ["NVIDIA", "AMD"] and not is_apu:
+            print_error(f"FATAL: Single {vendor} dGPU detected. Passthrough requires a second GPU."); return None
+        if is_apu:
+            print_warning("Single AMD APU detected. This implies a single-GPU passthrough (headless host).")
+            if input("Acknowledge and proceed? (y/N): ").strip().lower() != 'y': return None
+            return gpu
+    if len(gpus) > 1:
+        print_info("Multiple GPUs detected. This is a supported 'Two-GPU Passthrough' configuration.")
+        return select_from_list(gpus, "Select the GPU to pass through to the GUEST VM", display_key='display')
+    return gpus[0]
+
+def _get_iommu_groups():
+    return _run_command(["bash", "-c", "for d in /sys/kernel/iommu_groups/*/devices/*; do n=${d#*/iommu_groups/*}; n=${n%%/*}; printf 'IOMMU Group %s ' \"$n\"; lspci -nns \"${d##*/}\"; done"])
+
+def _get_full_iommu_group_devices(pci_id, groups_out):
+    device_group_num = next((line.split()[2] for line in groups_out.splitlines() if pci_id in line), None)
+    if not device_group_num: return None, [], []
+    pci_ids, vendor_ids = [], []
+    for line in groups_out.splitlines():
+        if f"IOMMU Group {device_group_num}" in line:
+            parts = line.split()
+            if len(parts) > 3 and re.match(r'^[\da-f:.]+$', parts[3]):
+                pci_ids.append(parts[3])
+
+            vdid_match = re.search(r'\[([\da-f]{4}:[\da-f]{4})\]', line)
+            if vdid_match: vendor_ids.append(vdid_match.group(1))
+
+    return device_group_num, sorted(list(set(pci_ids))), sorted(list(set(vendor_ids)))
+
+def _check_vfio_binding_status(guest_gpu):
+    print_header("4. Driver Binding Check")
+    if guest_gpu['driver'] == 'vfio-pci':
+        print_success("GPU is currently bound to 'vfio-pci', as expected for a static setup.")
+    else:
+        print_success(f"GPU is currently bound to its host driver ('{guest_gpu['driver']}'). This is correct for Live Passthrough.")
+    return True
+
+def _check_nvidia_quirks(guest_gpu):
+    vendor_id = guest_gpu['ids'].split(':')[0]
+    if vendor_id != "10de": return True, ""
+    print_header('5. NVIDIA "Error 43" Bypass Check')
+    print_warning("NVIDIA GPU detected. Special configuration is needed to prevent 'Error 43'.")
+    print_info(f"This tool will automatically apply {Style.BOLD}-cpu host,kvm=off,hv_vendor_id=null{Style.ENDC} at launch.")
+    return True, "NVIDIA"
+
+def _check_and_load_vfio_module():
+    print_header("Live Passthrough Prerequisite: VFIO Module")
+    lsmod_out = _run_command(["lsmod"])
+    if 'vfio_pci' in lsmod_out:
+        print_success("`vfio-pci` kernel module is loaded.")
+        return True
+
+    print_error("FAIL: The `vfio-pci` kernel module is not loaded.")
+    print_info("For 'Live Passthrough' to work, this module must be loaded at boot.")
+
+    conf_file = "/etc/modules-load.d/vfio-pci.conf"
+    conf_file_bak = f"{conf_file}.vm_manager.bak"
+    if os.path.exists(conf_file) and not os.path.exists(conf_file_bak):
+        print_info(f"Backing up existing '{conf_file}' to '{conf_file_bak}'")
+        shutil.copy(conf_file, conf_file_bak)
+
+    print_warning(f"This tool can create a configuration file to load it automatically:")
+    print(f"  File:    {conf_file}\n  Content: vfio-pci")
+
+    if input("Create this file now? (y/N): ").strip().lower() == 'y':
+        try:
+            with open(conf_file, 'w') as f:
+                f.write("vfio-pci\n")
+            print_success(f"File '{conf_file}' created.")
+            print_warning("A ONE-TIME REBOOT is required for this change to take effect.")
+            print_info(f"Please run '{Style.BOLD}sudo reboot{Style.ENDC}' and then run this script again.")
+        except Exception as e:
+            print_error(f"Failed to write file: {e}")
+    else:
+        print_info("Configuration skipped. Live passthrough will fail until the module is loaded.")
+
+    return False
+
+def _check_iommu_groups_sanity(guest_gpu):
+    print_header("6. IOMMU Group & VFIO Module Sanity Check")
+    if not _check_and_load_vfio_module():
+        return False # Stop if VFIO isn't ready
+
+    groups_out = _get_iommu_groups()
+    if not groups_out: print_error("Could not read IOMMU groups."); return False
+    group_num, _, _ = _get_full_iommu_group_devices(guest_gpu['pci'], groups_out)
+    if not group_num: print_error("Could not find IOMMU group for GPU."); return False
+    print_info(f"Selected GPU is in IOMMU Group {group_num}. Checking for safety...")
+    is_clean = True
+    group_members = [line for line in groups_out.splitlines() if f"IOMMU Group {group_num}" in line]
+    for member in group_members:
+        is_vga = "VGA compatible controller" in member or "[0300]" in member
+        if is_vga and guest_gpu['pci'] not in member:
+            print_error(f"FATAL: Host GPU in same group: {member}"); is_clean = False
+        if any(c in member for c in ["USB", "SATA", "Ethernet", "Non-Volatile memory"]) and not is_vga:
+             print_error(f"FATAL: Critical device in same group: {member}"); is_clean = False
+    print("\n--- Group Members ---\n" + "\n".join(group_members) + "\n---------------------")
+    if not is_clean: print_error("\nIOMMU group is unsafe. Passthrough would crash the host."); return False
+    print_success("IOMMU Group is clean and appears safe for passthrough."); return True
+
+def run_gpu_passthrough_check():
+    clear_screen(); print_header("GPU Passthrough System Compatibility Check")
+    is_laptop = _check_system_type()
+    if is_laptop:
+        print_warning("Laptop detected. Passthrough is extremely difficult and success is highly unlikely.")
+    else:
+        print_success("Desktop system detected. Ideal for passthrough.")
+
+    iommu_status = _check_iommu_support()
+    if iommu_status is False: return
+    guest_gpu = _select_guest_gpu()
+    if not guest_gpu: return
+    if iommu_status == 'skipped':
+        print_warning("IOMMU check was skipped. Group sanity check may be unreliable.")
+    _check_vfio_binding_status(guest_gpu)
+    _check_nvidia_quirks(guest_gpu)
+    if not _check_iommu_groups_sanity(guest_gpu):
+        return
+    print_header("🎉 Checklist Complete! 🎉")
+    print_info("Review output. If any checks failed, they must be resolved before proceeding.")
+    print_warning("If you made any changes (like updating GRUB), a reboot is required.")
+
+def _get_pci_device_driver(pci_id):
+    try:
+        driver_path = f"/sys/bus/pci/devices/{pci_id}/driver"
+        if os.path.islink(driver_path):
+            return os.path.basename(os.readlink(driver_path))
+    except Exception:
+        pass
+    return None
+
+def _detect_display_manager():
+    """Detects the active display manager service."""
+    for dm in ["gdm", "lightdm", "sddm", "lxdm", "xdm"]:
+        result = subprocess.run(["systemctl", "is-active", f"{dm}.service"], capture_output=True, text=True)
+        if result.returncode == 0:
+            return f"{dm}.service"
+    return None
+
+def run_vm_with_live_passthrough():
+    clear_screen(); print_header("Run VM with Live Passthrough")
+
+    if not _check_and_load_vfio_module():
+        print_error("Launch aborted. Please reboot and try again after `vfio-pci` module is loaded.")
+        return
+
+    dm_service = _detect_display_manager()
+    if dm_service is None and os.environ.get("DISPLAY"):
+        print_error("Unsupported Host Configuration for Live Passthrough")
+        print_warning("A graphical session (X11/Wayland) is running, but it was not started by a recognized display manager service (gdm, sddm, etc.).")
+        print_info("This is common for minimalist window managers started with `startx`.")
+        print_warning("\nThis script cannot safely stop your graphical session automatically.")
+        print_info(f"To proceed, please do the following:\n  1. Log out of your graphical session.\n  2. Switch to a TTY (text console) using {Style.BOLD}Ctrl+Alt+F3{Style.ENDC}.\n  3. Log in there and run this script again.")
+        return
+
+    # --- GATHER ALL INFO BEFORE STOPPING DISPLAY ---
+    vm_name = select_vm("run with Live Passthrough")
+    if not vm_name: return
+
+    passthrough_devices = {}
+    while True:
+        print_header("Select Devices for Passthrough")
+        print(f"Current devices: {list(d['display'] for d in passthrough_devices.values()) or 'None'}")
+        choice = input(f"{Style.BOLD}Add device: [1] GPU, [2] USB Controller, [3] NVMe Drive, [4] Done: {Style.ENDC}").strip()
+        if choice == '1': devices = _get_gpus(); name = "GPU"
+        elif choice == '2': devices = _get_usb_controllers(); name = "USB Controller"
+        elif choice == '3': devices = _get_nvme_drives(); name = "NVMe Drive"
+        elif choice == '4': break
+        else: print_warning("Invalid choice."); continue
+
+        if not devices: print_error(f"No {name} devices found."); continue
+        devices = [d for d in devices if d['pci'] not in passthrough_devices]
+        if not devices: print_error(f"All available {name}s already selected."); continue
+
+        selected_dev = select_from_list(devices, f"Choose a {name} to pass through", 'display')
+        passthrough_devices[selected_dev['pci']] = selected_dev
+
+    if not passthrough_devices: print_info("No devices selected. Aborting."); return
+
+    print_header("Gathering All VM Information")
+    final_pci_ids_to_bind = set()
+    final_vendor_ids_to_register = set()
+    original_drivers = {}
+    iommu_groups_out = _get_iommu_groups()
+
+    for pci_id in passthrough_devices:
+        _, group_pci_ids, group_vendor_ids = _get_full_iommu_group_devices(pci_id, iommu_groups_out)
+        if not group_pci_ids:
+            print_error(f"Could not find IOMMU group for {pci_id}. Aborting."); return
+
+        for dev_id in group_pci_ids:
+            if not re.match(r'^[\da-f:.]+$', dev_id):
+                print_error(f"FATAL: Collected an invalid device ID '{dev_id}' for IOMMU group of {pci_id}. Aborting.")
+                return
+            original_drivers[dev_id] = _get_pci_device_driver(dev_id)
+
+        print_info(f"Adding IOMMU group for {pci_id}: {', '.join(group_pci_ids)}")
+        final_pci_ids_to_bind.update(group_pci_ids)
+        final_vendor_ids_to_register.update(group_vendor_ids)
+
+    input_devices = find_input_devices()
+    if not input_devices: return
+    vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
+
+    # --- FINAL CONFIRMATION ---
+    is_laptop = _check_system_type()
+
+    print_header("Pre-Flight Checklist")
+    print_info(f"VM Name: {vm_name}")
+    print_info(f"Memory: {vm_settings['VM_MEM']}, CPU Cores: {vm_settings['VM_CPU']}")
+    print_info(f"Passthrough Devices: {', '.join(sorted(list(final_pci_ids_to_bind)))}")
+
+    if dm_service:
+        print_warning("\nCRITICAL WARNING: This process will stop your graphical desktop session.")
+        if is_laptop:
+            print(f"{Style.FAIL}{Style.BOLD}Your built-in screen WILL go black. This is NORMAL.{Style.ENDC}")
+            print(f"{Style.OKGREEN}To see the VM, you MUST connect an external monitor to your laptop's HDMI/DisplayPort.{Style.ENDC}")
+        else:
+            print(f"{Style.FAIL}{Style.BOLD}Your primary monitor WILL go black. This is NORMAL.{Style.ENDC}")
+            print(f"{Style.OKGREEN}You must connect a second monitor to the passed-through GPU to see the VM.{Style.ENDC}")
+        print(f"{Style.OKGREEN}Your desktop will automatically return when the VM shuts down.{Style.ENDC}")
+
+    if input("\nProceed with launch? (y/N): ").strip().lower() != 'y': return
+
+    # --- BUILD THE INDEPENDENT LAUNCHER SCRIPT ---
+
+    script_path = f"/tmp/vm_passthrough_launcher_{os.getpid()}.sh"
+    log_path = f"/tmp/vm_passthrough_launcher_{os.getpid()}.log"
+
+    host_dns, ssh_port = find_host_dns(), find_unused_port()
+    ids = {'uuid': str(uuid.uuid4()), 'mac': f"52:54:00:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}"}
+    vendor = "NVIDIA" if any(dev['ids'].startswith('10de') for dev in passthrough_devices.values()) else ""
+    primary_gpu = next((d for d in passthrough_devices.values() if d['class_code'] == '0300'), None)
+    passthrough_info = {
+        "vga_pci": primary_gpu['pci'] if primary_gpu else list(final_pci_ids_to_bind)[0],
+        "pci_ids": list(final_pci_ids_to_bind),
+        "vendor": vendor,
+        "devices": passthrough_devices
+    }
+
+    qemu_cmd_list = _get_qemu_command(vm_name, vm_settings, input_devices, ids, host_dns, ssh_port, passthrough_info)
+
+    with open(script_path, 'w') as f:
+        f.write("#!/bin/bash\n")
+        f.write(f"exec &> {log_path}\n")
+        f.write("set -x\n")
+
+        post_cmds = []
+        if dm_service:
+            post_cmds.append(f"echo 'Restarting graphical session...' && systemctl start {dm_service}")
+        for pci_id in reversed(sorted(list(final_pci_ids_to_bind))): # rebind in reverse
+            original_driver = original_drivers.get(pci_id)
+            if original_driver:
+                post_cmds.insert(0, f"echo 'Rebinding {pci_id} to {original_driver}' && echo {pci_id} > /sys/bus/pci/drivers/{original_driver}/bind || true")
+                post_cmds.insert(0, f"echo {pci_id} > /sys/bus/pci/drivers/vfio-pci/unbind || true")
+        for vdid in final_vendor_ids_to_register:
+             post_cmds.insert(0, f"echo {vdid.replace(':', ' ')} > /sys/bus/pci/drivers/vfio-pci/remove_id || true")
+
+        f.write("function cleanup {\n")
+        f.write("    echo '--- Running cleanup ---'\n")
+        for cmd in post_cmds:
+            f.write(f"    {cmd}\n")
+        f.write("    echo '--- Cleanup complete ---'\n")
+        f.write("}\n")
+        f.write("trap cleanup EXIT\n\n")
+
+        if dm_service:
+            f.write(f"echo 'Stopping graphical session...' && systemctl stop {dm_service}\n")
+            f.write("sleep 3\n")
+
+        for vdid in final_vendor_ids_to_register:
+            f.write(f"echo {vdid.replace(':', ' ')} > /sys/bus/pci/drivers/vfio-pci/new_id || true\n")
+        for pci_id in final_pci_ids_to_bind:
+            f.write(f"echo 'Unbinding {pci_id}' && echo {pci_id} > /sys/bus/pci/devices/{pci_id}/driver/unbind || true\n")
+            f.write(f"echo 'Binding {pci_id} to vfio-pci' && echo {pci_id} > /sys/bus/pci/drivers/vfio-pci/bind\n")
+
+        f.write("\n\necho '--- Launching QEMU ---'\n")
+        f.write(' '.join(shlex.quote(s) for s in qemu_cmd_list))
+        f.write("\n\necho '--- QEMU process finished, exiting script. Cleanup trap will run. ---'\n")
+
+    os.chmod(script_path, 0o755)
+
+    print_info(f"Handing off to independent launcher script: {script_path}")
+    print_warning("This script will now exit. The background process is in control.")
+    print_warning(f"Your screen should go black shortly. To debug, check the log file at: {log_path}")
+
+    subprocess.Popen(['nohup', 'bash', script_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
+    sys.exit(0)
+
+def revert_system_changes():
+    clear_screen(); print_header("Revert System to Pre-Passthrough State")
+    files_to_revert = {
+        "/etc/default/grub": "GRUB configuration",
+        "/etc/modprobe.d/vfio.conf": "VFIO static binding",
+        "/etc/modules-load.d/vfio-pci.conf": "VFIO module auto-load config"
+    }
+    backups_found = {}
+    files_to_delete = []
+
+    for f_path, desc in files_to_revert.items():
+        backup_path = f"{f_path}.vm_manager.bak"
+        if os.path.exists(backup_path):
+            backups_found[backup_path] = f_path
+        elif os.path.exists(f_path):
+             files_to_delete.append((f_path, desc))
+
+    if not backups_found and not files_to_delete:
+        print_info("No backup or generated files found. System appears to be in a clean state."); return
+
+    print_warning("The following changes can be reverted:")
+    for backup, original in backups_found.items():
+        print(f"  - Restore '{original}' from backup '{backup}'")
+    for f_path, desc in files_to_delete:
+        print(f"  - Delete generated file for '{desc}': {f_path}")
+
+    if input("Are you sure you want to proceed? (y/N): ").strip().lower() != 'y':
+        print_info("Operation cancelled."); return
+
+    for backup, original in backups_found.items():
+        try:
+            shutil.move(backup, original)
+            print_success(f"Restored {original}")
+        except Exception as e:
+            print_error(f"Failed to restore {original}: {e}")
+    for f_path, _ in files_to_delete:
+        remove_file(f_path)
+
+
+    print_header("Revert Complete")
+    distro = detect_distro()
+    update_grub_cmd = DISTRO_INFO.get(distro, {}).get("grub_update", "sudo update-grub")
+    update_initramfs_cmd = DISTRO_INFO.get(distro, {}).get("initramfs_update", "sudo update-initramfs -u")
+    print_warning("ACTION REQUIRED: To finalize the revert, you may need to update system configs and reboot.")
+    print_info(f"If GRUB or initramfs were affected, run these commands:\n  {Style.BOLD}{update_grub_cmd}\n  {update_initramfs_cmd}{Style.ENDC}")
+    print_info(f"Then reboot with: {Style.BOLD}sudo reboot{Style.ENDC}")
+
+def display_passthrough_guide():
+    clear_screen(); print_header("What to Expect & How to Use Passthrough")
+    print(f"""
+{Style.BOLD}Understanding the "Headless Host" Concept{Style.ENDC}
+When you pass a GPU to a VM, your main operating system (the "host") can no longer use it. For this to work without crashing, we must completely stop the host's graphical desktop environment before the VM starts.
+
+{Style.WARNING}This means your screen WILL go black and show a text cursor. This is normal!{Style.ENDC}
+
+The host is now "headless" (it has no display). The VM, however, now has full control of the GPU.
+
+{Style.BOLD}How Do I See the VM's Display?{Style.ENDC}
+You need to connect a monitor to a port that is physically wired to the passed-through GPU.
+
+  - {Style.OKCYAN}For Laptops:{Style.ENDC}
+    This almost always means you {Style.BOLD}MUST connect an external monitor or TV{Style.ENDC} to your laptop's {Style.OKGREEN}HDMI or DisplayPort{Style.ENDC}.
+    The VM will appear on the external monitor. Your built-in laptop screen will remain black.
+
+  - {Style.OKCYAN}For Desktops:{Style.ENDC}
+    You need two monitors. One connected to your host GPU, and a second one connected to the GPU you are passing to the VM.
+    Your host monitor will go black, and the VM will appear on the second monitor.
+
+{Style.BOLD}What Happens When I Shut Down the VM?{Style.ENDC}
+The script will automatically perform a cleanup sequence:
+1. It gives the GPU back to the host system.
+2. It restarts your graphical desktop environment.
+3. You will be returned to your normal login screen.
+
+{Style.BOLD}Alternative: Remote Desktop{Style.ENDC}
+If you do not have an external monitor, you can install remote desktop software (like VNC, XRDP, or NoMachine) inside your VM's operating system. You can then connect to the VM's desktop from another computer on your network.
+    """)
+
+def gpu_passthrough_menu():
+    if not shutil.which("lspci"):
+        print_error("`lspci` command not found. Please install `pciutils` for your distribution.")
+        return
+    while True:
+        clear_screen()
+        print(f"\n{Style.HEADER}{Style.BOLD}Passthrough & Performance (Advanced){Style.ENDC}\n───────────────────────────────────────────────")
+        print(f"{Style.OKBLUE}1.{Style.ENDC} {Style.BOLD}Run VM with 'Live' Passthrough (GPU, USB, NVMe){Style.ENDC}")
+        print(f"{Style.OKCYAN}2.{Style.ENDC} {Style.BOLD}Run System Compatibility Checklist{Style.ENDC}")
+        print(f"{Style.OKGREEN}3.{Style.ENDC} {Style.BOLD}Learn about Performance Tuning (CPU Pinning/HugePages){Style.ENDC}")
+        print(f"{Style.OKBLUE}4.{Style.ENDC} {Style.BOLD}What to Expect & How to Use Passthrough{Style.ENDC}")
+        print(f"{Style.FAIL}5.{Style.ENDC} {Style.BOLD}Revert ALL Passthrough-Related System Changes{Style.ENDC}")
+        print(f"{Style.WARNING}6.{Style.ENDC} {Style.BOLD}Return to Main Menu{Style.ENDC}")
+        print("───────────────────────────────────────────────")
+        choice = input(f"{Style.BOLD}Select an option [1-6]: {Style.ENDC}").strip()
+        action_taken = True
+        if choice == "1": run_vm_with_live_passthrough()
+        elif choice == "2": run_gpu_passthrough_check()
+        elif choice == "3": display_performance_tuning_info()
+        elif choice == "4": display_passthrough_guide()
+        elif choice == "5": revert_system_changes()
+        elif choice == "6": break
+        else: print_warning("Invalid option."); action_taken = False
+        if action_taken: input("\nPress Enter to return to the menu...")
+
+def main_menu():
+    os.makedirs(CONFIG['VMS_DIR'], exist_ok=True)
+    while True:
+        clear_screen()
+        print(f"\n{Style.HEADER}{Style.BOLD}Universal VM Manager{Style.ENDC}\n───────────────────────────────────────────────")
+        print(f"{Style.OKBLUE}1.{Style.ENDC} {Style.BOLD}Create New VM{Style.ENDC}")
+        print(f"{Style.OKCYAN}2.{Style.ENDC} {Style.BOLD}Run / Resume VM Session (Standard Graphics){Style.ENDC}")
+        print(f"{Style.OKBLUE}3.{Style.ENDC} {Style.BOLD}Nuke & Boot a Fresh Session{Style.ENDC}")
+        print(f"{Style.OKGREEN}4.{Style.ENDC} {Style.BOLD}Transfer Files to/from a Running VM{Style.ENDC}")
+        print(f"{Style.OKCYAN}5.{Style.ENDC} {Style.BOLD}Passthrough & Performance (Advanced){Style.ENDC}")
+        print(f"{Style.WARNING}6.{Style.ENDC} {Style.BOLD}Stop a Running VM{Style.ENDC}")
+        print(f"{Style.FAIL}7.{Style.ENDC} {Style.BOLD}Nuke VM Completely{Style.ENDC}")
+        print(f"{Style.OKBLUE}8.{Style.ENDC} {Style.BOLD}Exit{Style.ENDC}")
+        print("───────────────────────────────────────────────")
+        try:
+            choice = input(f"{Style.BOLD}Select an option [1-8]: {Style.ENDC}").strip()
+            action_taken, vm_name = True, None
+            if choice == "1": create_new_vm()
+            elif choice == "2":
+                vm_name = select_vm("Run / Resume")
+                if vm_name: run_or_nuke_vm(vm_name, is_fresh=False)
+            elif choice == "3":
+                vm_name = select_vm("Nuke & Boot")
+                if vm_name: run_or_nuke_vm(vm_name, is_fresh=True)
+            elif choice == "4": transfer_files()
+            elif choice == "5": gpu_passthrough_menu(); action_taken = False
+            elif choice == "6": stop_vm()
+            elif choice == "7": nuke_vm_completely()
+            elif choice == "8": print_info("Exiting. Goodbye! 👋"); break
+            else: print_warning("Invalid option."); action_taken = False
+
+            if action_taken and choice != '5':
+                 input("\nPress Enter to return to the menu...")
+        except (KeyboardInterrupt, EOFError): print_info("\nExiting. Goodbye! 👋"); break
+        except RuntimeError as e:
+            if "lost sys.stdin" in str(e): print_error("This script is interactive and cannot be run in this environment."); break
+            else: raise e
+
+if __name__ == "__main__":
+    main_menu()
