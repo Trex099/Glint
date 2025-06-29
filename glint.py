@@ -19,7 +19,7 @@ def check_dependencies():
     """
     Checks for required dependencies and prompts the user to download them if they are missing.
     """
-    if not os.path.exists("virtio-win.iso"):
+    if not any("virtio" in f.lower() and f.endswith(".iso") for f in os.listdir()):
         print_warning("VirtIO drivers ISO not found.")
         if input("Download it now? (y/N): ").strip().lower() == 'y':
             download_file("https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso", "virtio-win.iso")
