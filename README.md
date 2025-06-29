@@ -80,16 +80,19 @@ This incredible disposability doesn't mean your work is volatile. By simply choo
 
 ## 🛠️ Getting Started
 
-### 1. Clone the Repository
+### 1. Prerequisites
 
-The only prerequisite is `git`.
+*   **Operating System:** A modern Linux distribution (Arch, Debian, Ubuntu, Fedora, etc.).
+*   **Required Software:** `git` and `python3`.
+
+### 2. Clone the Repository
 
 ```bash
 git clone https://github.com/Trex099/Glint.git
 cd Glint
 ```
 
-### 2. Run Glint
+### 3. Run Glint
 
 That's it. The script handles the rest.
 
