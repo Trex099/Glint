@@ -131,11 +131,12 @@ def create_new_windows_vm():
 
 
 
-def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None, virtio_path=None):
+def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None, virtio_path=None, use_overlay=False):
     """
     Builds the QEMU command for a Windows VM.
     """
     paths = get_vm_paths(vm_name)
+    disk_path = paths['overlay'] if use_overlay and os.path.exists(paths['overlay']) else paths['base']
     qemu_cmd = [
         CONFIG["QEMU_BINARY"],
         "-enable-kvm",
@@ -144,7 +145,7 @@ def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None, virtio_path=None
         "-uuid", ids['uuid'],
         "-drive", f"if=pflash,format=raw,readonly=on,file={CONFIG['UEFI_CODE']}",
         "-drive", f"if=pflash,format=raw,file={paths['uefi_vars']}",
-        "-drive", f"file={paths['base']},if=virtio",
+        "-drive", f"file={disk_path},if=virtio",
         "-netdev", "user,id=n1",
         "-device", "virtio-net-pci,netdev=n1",
         "-vga", "virtio",
@@ -186,8 +187,12 @@ def run_windows_vm():
         print_error(f"Base disk for '{vm_name}' not found. Cannot run.")
         return
 
+    if not os.path.exists(paths['overlay']):
+        print_info("No existing session found. Creating a new one.")
+        run_command_live(["qemu-img", "create", "-f", "qcow2", "-b", paths['base'], "-F", "qcow2", paths['overlay']], as_root=False, check=True)
+
     vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
-    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''})
+    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''}, use_overlay=True)
     launch_in_new_terminal_and_wait([("Booting VM", qemu_cmd)])
 
 
