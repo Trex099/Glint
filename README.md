@@ -21,6 +21,7 @@ Glint is packed with features designed to make VM management powerful, flexible,
     *   **Installer Downloader:** Includes a script to fetch macOS recovery images directly from Apple's servers if you don't have one.
 *   **User-Friendly TUI:** A simple, terminal-based interface that guides you through every step, from creation to execution.
 *   **Built-in Dependency Checker:** Automatically detects your Linux distribution and checks for required packages like QEMU and OVMF, offering to install them for you.
+*   **Automatic Dependency Resolution:** The script automatically detects your Linux distribution and offers to install any missing dependencies, such as QEMU, OVMF, and other required tools.
 *   **Integrated File Transfer:** Easily copy files and folders to and from a running Linux VM using SCP, with port forwarding handled automatically.
 
 ---
@@ -79,31 +80,29 @@ This incredible disposability doesn't mean your work is volatile. By simply choo
 
 ## 🛠️ Getting Started
 
-### 1. Prerequisites
+### 1. Clone the Repository
 
-Glint is designed for Arch-based systems but can be adapted for other distributions. The script will check for dependencies and offer to install them.
-
-```bash
-# For Arch Linux / Manjaro
-sudo pacman -S qemu-desktop edk2-ovmf python mtools
-
-# For Debian/Ubuntu (Adaptation may be required)
-# sudo apt-get install qemu-system-x86 qemu-utils ovmf python3 mtools
-```
-
-### 2. Clone the Repository
+The only prerequisite is `git`.
 
 ```bash
 git clone https://github.com/Trex099/Glint.git
 cd Glint
 ```
 
-### 3. Run Glint
+### 2. Run Glint
+
+That's it. The script handles the rest.
 
 ```bash
 python3 glint.py
 ```
-*Note: The script will use `sudo` internally for operations that require root privileges, such as loading kernel modules or managing system services for GPU passthrough.*
+
+When you run Glint for the first time, it will:
+1.  Detect your Linux distribution.
+2.  Check for required dependencies (like QEMU, OVMF, and `mtools`).
+3.  If anything is missing, it will provide you with the exact command to install it and offer to run it for you.
+
+*Note: The script will use `sudo` internally for operations that require root privileges, such as installing packages or managing system services for GPU passthrough.*
 
 ---
 
