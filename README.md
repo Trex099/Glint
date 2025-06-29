@@ -1,0 +1,141 @@
+# ✨ Glint: The Disposable & Persistent VM Environment
+
+Glint is not just a VM manager. It's a revolutionary tool for creating and managing **forensically clean, disposable, yet persistent** virtual machines. It's designed for developers, security researchers, and privacy-conscious users who need the ability to instantly generate a brand-new, untraceable machine identity for tasks like malware analysis, penetration testing, or simply ensuring absolute privacy.
+
+This project was born from a single, powerful idea: what if you could have a virtual machine that leaves no trace, has no history, and can be reborn as a completely new device at any moment, all without the hours of manual setup? Glint makes this a reality for both Linux and macOS.
+
+---
+
+## ✨ Core Features
+
+Glint is packed with features designed to make VM management powerful, flexible, and simple.
+
+*   **Disposable & Persistent Architecture:** The core of Glint. Keep your OS installation pristine while having the ability to instantly "nuke" a session, creating a forensically clean machine with a new identity (new serial numbers, UUIDs, MAC addresses) without reinstalling.
+*   **Advanced GPU Passthrough (Linux VMs):**
+    *   **Live Passthrough:** Dedicate a GPU, USB controller, or NVMe drive to your Linux VM for near-native performance.
+    *   **Automated Host Preparation:** The script handles stopping your display manager, binding drivers to `vfio-pci`, and safely restoring your host session when the VM shuts down.
+    *   **System Compatibility Checker:** A built-in tool to check your IOMMU groups, kernel settings, and hardware configuration for passthrough readiness.
+*   **Automated macOS Setup:**
+    *   **SMBIOS & ROM Generation:** Automatically generates valid Mac serial numbers, board IDs, and a synchronized ROM value using `GenSMBIOS` to ensure compatibility with Apple services.
+    *   **Pre-configured OpenCore:** Uses a known-good OpenCore configuration, patching it with your VM's unique identity to ensure a smooth boot process.
+    *   **Installer Downloader:** Includes a script to fetch macOS recovery images directly from Apple's servers if you don't have one.
+*   **User-Friendly TUI:** A simple, terminal-based interface that guides you through every step, from creation to execution.
+*   **Built-in Dependency Checker:** Automatically detects your Linux distribution and checks for required packages like QEMU and OVMF, offering to install them for you.
+*   **Integrated File Transfer:** Easily copy files and folders to and from a running Linux VM using SCP, with port forwarding handled automatically.
+
+---
+
+### 🖼️ Showcase
+
+*(Placeholder for a GIF showcasing the "Nuke & Recreate" feature, followed by a successful boot of a "new" machine.)*
+**[Glint in Action: A VM is "nuked" and reborn with a new identity in seconds.]**
+
+*(Placeholder for a screenshot of a running macOS VM with a fresh user account.)*
+**[A pristine macOS environment, ready for any task.]**
+
+---
+
+## 🚀 How It Works: The Disposable & Persistent Model
+
+Glint introduces a new way to think about virtualization. Every VM you create has two parts: a **stable base installation** and a **disposable session identity**.
+
+### ✅ Safe & Non-Destructive by Design
+
+Before we dive in, it's critical to understand one thing: **the "Nuke" commands will NEVER delete your base operating system installation.** The `macOS.qcow2` or `base.qcow2` files that hold your OS are never touched. "Nuking" simply deletes the session and identity files, allowing you to start a fresh session on your existing installation, saving you from ever having to reinstall the OS.
+
+### The "Nuke" Button: Your Digital Reset Switch
+
+This is the core of Glint's power. The "Nuke" option is your one-click solution for creating a forensically new machine on top of your stable OS installation.
+
+| Operating System | What Gets DELETED (The Disposable Part) | What is ALWAYS KEPT (The Persistent Part) |
+| :--------------- | :-------------------------------------- | :-------------------------------------- |
+| **macOS**        | `OpenCore.qcow2` (The Bootloader & Identity) | `macOS.qcow2` (Your OS Installation)    |
+| **Linux**        | `overlay.qcow2` (The Session & All Changes) | `base.qcow2` (Your OS Installation)     |
+
+#### For macOS: A New Mac, Every Time
+
+When you "Nuke & Recreate" a macOS VM, you are creating what is, for all intents and purposes, a **brand-new computer** that boots from your existing installation. Glint automatically:
+*   **Generates a New SMBIOS:** A completely new, valid Serial Number, Board Serial, and UUID are created.
+*   **Generates a New MAC Address:** The virtual network card gets a new, unique hardware address.
+*   **Synchronizes Hardware ID:** The new MAC address is surgically injected into the configuration as the `ROM` value, creating a perfect 1-to-1 match that is critical for Apple service compatibility.
+*   **Rebuilds the Bootloader:** The `OpenCore.qcow2` disk is completely destroyed and rebuilt from a known-good, community-vetted configuration.
+
+**The Result:** In seconds, you have a VM that appears to Apple's servers and any forensic tool as a completely different machine, all while booting your same, stable macOS installation.
+
+#### For Linux: A Clean Slate
+
+When you "Nuke & Boot" a Linux VM, Glint provides a pristine, untouched environment by deleting the session overlay.
+*   **Destroys the Overlay:** The entire session overlay, including all changes, logs, and user data, is permanently deleted.
+*   **Generates a New Machine ID:** A new UUID and MAC address are generated for the new session.
+*   **Resets the UEFI Environment:** A fresh copy of the UEFI variables is created from the system template.
+
+**The Result:** You are booting from your clean base image into a completely new session, with no history and no fingerprints from previous work, without ever having to reinstall.
+
+### Persistence is a Choice
+
+This incredible disposability doesn't mean your work is volatile. By simply choosing **"Run Existing VM"**, you can maintain a persistent state for as long as you need, preserving your files, applications, and settings across reboots. Glint gives you the power to choose when you want to be persistent and when you want to be a ghost.
+
+---
+
+## 🛠️ Getting Started
+
+### 1. Prerequisites
+
+Glint is designed for Arch-based systems but can be adapted for other distributions. The script will check for dependencies and offer to install them.
+
+```bash
+# For Arch Linux / Manjaro
+sudo pacman -S qemu-desktop edk2-ovmf python mtools
+
+# For Debian/Ubuntu (Adaptation may be required)
+# sudo apt-get install qemu-system-x86 qemu-utils ovmf python3 mtools
+```
+
+### 2. Clone the Repository
+
+```bash
+git clone [URL_to_your_GitHub_repository]
+cd Glint
+```
+
+### 3. Run Glint
+
+```bash
+python3 Glint.py
+```
+*Note: The script will use `sudo` internally for operations that require root privileges, such as loading kernel modules or managing system services for GPU passthrough.*
+
+---
+
+## ⚖️ Legality of macOS on Non-Apple Hardware
+
+While this project provides the technical means to install macOS in a virtual machine on non-Apple hardware, it is important to understand the legal and ethical implications. Apple's End User License Agreement (EULA) for macOS states that the operating system is only to be installed on Apple-branded hardware.
+
+From the macOS Sonoma EULA:
+> "...you are granted a limited, non-transferable, non-exclusive license... to install, use and run one (1) copy of the Apple Software on a single Apple-branded computer at any one time."
+
+By using this tool to install macOS on a non-Apple system, you are acting in violation of this EULA. This project is provided for educational and research purposes only. The developers of Glint are not responsible for your use of this software, and you assume all responsibility for complying with Apple's licensing terms.
+
+We do not provide support for and are not responsible for any legal issues that may arise from your use of this project. We encourage all users to respect the licensing of the software they use.
+
+---
+
+## 🔮 Upcoming Features
+
+Glint is an actively developed project. Here's what we have planned for the future:
+
+*   **Windows VM Manager:** The next major feature will be the addition of a full-featured Windows VM manager, complete with the same "Disposable & Persistent" philosophy.
+*   **Snapshot Management:** The ability to take and restore snapshots of your persistent VM states.
+*   **GUI Frontend:** A simple graphical user interface for users who prefer a visual workflow.
+
+---
+
+## ❤️ Contributing
+
+We welcome contributions from the community! If you have an idea for a new feature, a bug fix, or an improvement to the documentation, please feel free to open an issue or submit a pull request.
+
+---
+
+## 📜 License
+
+This project is licensed under the MIT License. See the `LICENSE` file for details.
