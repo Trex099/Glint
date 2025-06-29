@@ -7,42 +7,20 @@ import time
 import socket
 import shlex
 
-
+# --- Style and Color ---
 class Style:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
+    HEADER = '\033[95m'; OKBLUE = '\033[94m'; OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'; WARNING = '\033[93m'; FAIL = '\033[91m'
+    ENDC = '\033[0m'; BOLD = '\033[1m'
 
+def print_header(text): print(f"\n{Style.HEADER}{Style.BOLD}--- {text} ---{Style.ENDC}")
+def print_info(text): print(f"{Style.OKCYAN}ℹ️  {text}{Style.ENDC}")
+def print_success(text): print(f"{Style.OKGREEN}✅ {text}{Style.ENDC}")
+def print_warning(text): print(f"{Style.WARNING}⚠️  {text}{Style.ENDC}")
+def print_error(text): print(f"{Style.FAIL}❌ {text}{Style.ENDC}", file=sys.stderr)
+def clear_screen(): os.system('cls' if os.name == 'nt' else 'clear')
 
-def print_header(text):
-    print(f"\n{Style.HEADER}{Style.BOLD}--- {text} ---{Style.ENDC}")
-
-
-def print_info(text):
-    print(f"{Style.OKCYAN}ℹ️  {text}{Style.ENDC}")
-
-
-def print_success(text):
-    print(f"{Style.OKGREEN}✅ {text}{Style.ENDC}")
-
-
-def print_warning(text):
-    print(f"{Style.WARNING}⚠️  {text}{Style.ENDC}")
-
-
-def print_error(text):
-    print(f"{Style.FAIL}❌ {text}{Style.ENDC}", file=sys.stderr)
-
-
-def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-
+# --- File and Command Operations ---
 def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
     """Runs a command and prints its output live."""
     if as_root and os.geteuid() != 0:
@@ -53,6 +31,7 @@ def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
 
     try:
         if quiet:
+            # For quiet execution, capture output and only show it on error.
             result = subprocess.run(cmd_list, capture_output=True, text=True, check=check)
             if result.returncode != 0:
                 print_error(f"Command failed with exit code {result.returncode}")
@@ -61,6 +40,7 @@ def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
                 print_success("  Done.")
             return result.stdout
         else:
+            # For live execution, stream output.
             process = subprocess.Popen(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             output_lines = []
             for line in iter(process.stdout.readline, ''):
@@ -81,18 +61,14 @@ def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
 
 def _run_command(cmd, as_root=False):
     try:
-        if as_root and os.geteuid() != 0:
-            cmd.insert(0, "sudo")
+        if as_root and os.geteuid() != 0: cmd.insert(0, "sudo")
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
         return result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         output = ""
-        if hasattr(e, 'stdout') and e.stdout:
-            output += e.stdout.strip()
-        if hasattr(e, 'stderr') and e.stderr:
-            output += e.stderr.strip()
+        if hasattr(e, 'stdout') and e.stdout: output += e.stdout.strip()
+        if hasattr(e, 'stderr') and e.stderr: output += e.stderr.strip()
         return output
-
 
 def _create_launcher_script(script_path, commands, as_root=False):
     """Dynamically creates a shell script to run a series of commands in a new terminal."""
@@ -107,15 +83,12 @@ def _create_launcher_script(script_path, commands, as_root=False):
             f.write(f"echo -e '{Style.OKBLUE}▶️  {title}...{Style.ENDC}'\n{final_cmd}{quoted_cmd}\n\n")
     os.chmod(script_path, 0o755)
 
-
 def get_terminal_command(shell_script_path):
     """Returns the full command list to launch a command in a new terminal."""
     terminals = {'konsole': '-e', 'gnome-terminal': '--', 'xfce4-terminal': '-x', 'xterm': '-e'}
     for term, arg in terminals.items():
-        if shutil.which(term):
-            return [term, arg, 'bash', shell_script_path]
+        if shutil.which(term): return [term, arg, 'bash', shell_script_path]
     return None
-
 
 def launch_in_new_terminal_and_wait(commands, as_root_script=False):
     """Generates a launcher script and executes it in a new terminal, WAITING for it to complete."""
@@ -125,8 +98,7 @@ def launch_in_new_terminal_and_wait(commands, as_root_script=False):
         terminal_cmd = get_terminal_command(script_path)
         if not terminal_cmd:
             print_error("No supported terminal found! Please run the script manually from the launcher file.")
-            print_info(f"Launcher script created at: {script_path}")
-            return False
+            print_info(f"Launcher script created at: {script_path}"); return False
 
         print_info(f"Launching VM in a new terminal window... The script will wait for it to close.")
         process = subprocess.Popen(terminal_cmd)
@@ -138,7 +110,6 @@ def launch_in_new_terminal_and_wait(commands, as_root_script=False):
             time.sleep(1)
             os.remove(script_path)
 
-
 def remove_file(path, as_root=False):
     if as_root:
         if run_command_live(['rm', '-f', path], as_root=True, check=False) is not None:
@@ -148,23 +119,12 @@ def remove_file(path, as_root=False):
             print_error(f"Could not remove file {path}. Check permissions.")
             return False
     try:
-        os.remove(path)
-        print_success(f"Removed: {path}")
-        return True
-    except OSError as e:
-        print_error(f"Could not remove file {path}: {e}")
-        return False
-
+        os.remove(path); print_success(f"Removed: {path}"); return True
+    except OSError as e: print_error(f"Could not remove file {path}: {e}"); return False
 
 def remove_dir(path):
-    try:
-        shutil.rmtree(path)
-        print_success(f"Deleted VM: {os.path.basename(path)}")
-        return True
-    except OSError as e:
-        print_error(f"Could not delete directory {path}: {e}")
-        return False
-
+    try: shutil.rmtree(path); print_success(f"Deleted VM: {os.path.basename(path)}"); return True
+    except OSError as e: print_error(f"Could not delete directory {path}: {e}"); return False
 
 def select_from_list(items, prompt, display_key=None):
     for i, item in enumerate(items):
@@ -173,12 +133,9 @@ def select_from_list(items, prompt, display_key=None):
     while True:
         try:
             choice = int(input(f"{Style.BOLD}{prompt} [1-{len(items)}]: {Style.ENDC}").strip())
-            if 1 <= choice <= len(items):
-                return items[choice - 1]
-        except ValueError:
-            pass
+            if 1 <= choice <= len(items): return items[choice - 1]
+        except ValueError: pass
         print_warning("Invalid selection.")
-
 
 def find_host_dns():
     """
@@ -192,35 +149,30 @@ def find_host_dns():
                     dns_server = line.strip().split()[1]
                     if not dns_server.startswith("127."):
                         print_info(f"Found non-local DNS server: {dns_server}")
-                        return dns_server
+                        return dns_server # Return the first non-local DNS server
     except FileNotFoundError:
-        pass
+        pass # Fallback to public DNS
     print_warning("No non-local DNS server found, falling back to 8.8.8.8.")
-    return "8.8.8.8"
-
+    return "8.8.8.8" # Default public DNS
 
 def find_unused_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('', 0))
-        return s.getsockname()[1]
-
+        s.bind(('', 0)); return s.getsockname()[1]
 
 def setup_bridge_network():
     """
     This function previously handled bridge setup but now returns a reliable
-    'user' network configuration to ensure stability.
+    'user' network configuration to ensure stability, as proven by comparison
+    with a working reference script.
     """
     print_header("Network Configuration")
     print_info("Using reliable 'user' networking mode for maximum compatibility.")
     dns_server = find_host_dns()
     return f"user,id=net0,dns={dns_server}"
 
-
 def detect_distro():
     try:
         with open("/etc/os-release") as f:
             for line in f:
-                if line.startswith("ID="):
-                    return line.strip().split("=")[1].lower().strip('"')
-    except FileNotFoundError:
-        return None
+                if line.startswith("ID="): return line.strip().split("=")[1].lower().strip('"')
+    except FileNotFoundError: return None
