@@ -34,6 +34,7 @@ Glint is packed with features designed to make VM management powerful, flexible,
     *   **Live Passthrough:** Dedicate a GPU, USB controller, or NVMe drive to your Linux VM for near-native performance.
     *   **Automated Host Preparation:** The script handles stopping your display manager, binding drivers to `vfio-pci`, and safely restoring your host session when the VM shuts down.
     *   **System Compatibility Checker:** A built-in tool to check your IOMMU groups, kernel settings, and hardware configuration for passthrough readiness.
+*   **PCI Passthrough for macOS:** Connect your iPhone to Xcode inside the VM. By passing through a USB controller directly to macOS, you can achieve a native development experience, including live device debugging.
 *   **User-Friendly TUI:** A simple, terminal-based interface that guides you through every step, from creation to execution.
 *   **Automatic Dependency Resolution:** The script automatically detects your Linux distribution and offers to install any missing dependencies, such as QEMU, OVMF, and other required tools.
 *   **Integrated File Transfer:** Easily copy files and folders to and from a running Linux VM using SCP, with port forwarding handled automatically.
@@ -121,6 +122,17 @@ When you run Glint for the first time, it will:
 3.  If anything is missing, it will provide you with the exact command to install it and offer to run it for you.
 
 *Note: The script will use `sudo` internally for operations that require root privileges, such as installing packages or managing system services for GPU passthrough.*
+
+---
+
+## ❤️ Credits and Acknowledgements
+
+This project stands on the shoulders of giants. Glint wouldn't be possible without the incredible work of the open-source community.
+
+*   **QEMU:** For providing the powerful, flexible, and open-source virtualization engine that makes all of this possible.
+*   **OpenCore:** For their sophisticated bootloader that allows us to boot macOS on non-Apple hardware.
+*   **OSX-KVM:** For providing invaluable references and a solid foundation for macOS virtualization on Linux.
+*   **GenSMBIOS:** For the essential tool that makes generating valid SMBIOS information a breeze.
 
 ---
 
