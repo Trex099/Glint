@@ -13,7 +13,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from config import CONFIG
 from core_utils import (
     Style, print_header, print_info, print_warning, print_error, clear_screen,
-    run_command_live, launch_in_new_terminal_and_wait, select_from_list
+    run_command_live, launch_in_new_terminal_and_wait, select_from_list,
+    remove_dir, print_success
 )
 
 
@@ -230,9 +231,7 @@ def delete_windows_vm():
                   "including its virtual disk.\nThis action CANNOT be undone.")
     confirm = input(f"To confirm, please type the name of the VM ({vm_name}): ").strip()
     if confirm == vm_name:
-        from core_utils import remove_dir
         remove_dir(get_vm_paths(vm_name)['dir'])
-        print_success(f"VM '{vm_name}' has been deleted.")
     else:
         print_error("Confirmation failed. Aborting.")
 
