@@ -293,6 +293,11 @@ def download_file(url, destination):
     except requests.exceptions.RequestException as e:
         print_error(f"Failed to download {url}: {e}")
         return False
+    except KeyboardInterrupt:
+        print_error("\nDownload cancelled by user.")
+        if os.path.exists(destination):
+            os.remove(destination)
+        return False
 
 
 def detect_distro():
