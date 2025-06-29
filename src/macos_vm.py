@@ -1,22 +1,27 @@
+# pylint: disable=too-many-branches,too-many-statements
+"""
+This module handles all macOS VM management functionality.
+"""
 import os
 import sys
 import shutil
 import subprocess
 import re
-import uuid
 import plistlib
 import time
 import random
 import binascii
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from config import CONFIG, DISTRO_INFO
 from core_utils import (
     Style, print_header, print_info, print_success, print_warning, print_error, clear_screen,
-    run_command_live, select_from_list, launch_in_new_terminal_and_wait, remove_dir, detect_distro,
-    find_host_dns, setup_bridge_network, remove_file
+    run_command_live, select_from_list, launch_in_new_terminal_and_wait, remove_dir,
+    detect_distro, setup_bridge_network, remove_file
 )
 
-# --- Knowledge Base for Guided SMBIOS Selection ---
+
 MACOS_RECOMMENDED_MODELS = {
     "Sonoma (14)": "iMacPro1,1",
     "Ventura (13)": "MacPro7,1",
@@ -25,11 +30,11 @@ MACOS_RECOMMENDED_MODELS = {
     "Catalina (10.15)": "iMac19,1",
 }
 
-# -------------------------------------------------------------------
-# --- Helper Functions (Internal Use) ---
-# -------------------------------------------------------------------
 
 def _get_vm_paths(vm_name):
+    """
+    Returns a dictionary of paths for a given VM name.
+    """
     vm_dir = os.path.abspath(os.path.join(CONFIG['VMS_DIR_MACOS'], vm_name))
     return {
         "dir": vm_dir,
@@ -42,35 +47,36 @@ def _get_vm_paths(vm_name):
         "shared_dir": os.path.join(vm_dir, "Shared"),
     }
 
-def _get_macos_qemu_command(vm_name, vm_settings, mac_addr, passthrough_info=None, installer_path=None):
+
+def _get_macos_qemu_command(vm_name, vm_settings, mac_addr, installer_path=None):
     """
     Builds the QEMU command for a macOS VM, mirroring the known-good configuration
     from the user's reference 'sequoia.sh' script.
     """
     paths = _get_vm_paths(vm_name)
     cores = vm_settings.get('cpu', '8')
-    
+
     qemu_cmd = [
         "qemu-system-x86_64", "-enable-kvm", "-m", vm_settings['mem'],
-        
+
         # --- CPU: Use a spoofed model but disable unsupported features to prevent warnings ---
         "-cpu", "Skylake-Client,-hle,-rtm,kvm=off",
-        
+
         "-machine", "q35,accel=kvm",
         "-smp", f"{cores},sockets=1,cores={cores},threads=1",
         "-device", f"isa-applesmc,osk={CONFIG['OSK_KEY']}",
         "-smbios", "type=2",
-        
+
         # --- Firmware ---
         "-drive", f"if=pflash,format=raw,readonly=on,file={paths['uefi_code']}",
         "-drive", f"if=pflash,format=raw,file={paths['uefi_vars']}",
-        
+
         # --- Disks: Use virtio for main disks (from sequoia.sh) ---
         # OpenCore Bootloader (SATA for boot priority)
         "-device", "ich9-ahci,id=sata",
         "-device", "ide-hd,bus=sata.0,drive=opencore_disk",
         "-drive", f"id=opencore_disk,if=none,format=qcow2,file={paths['opencore']}",
-        
+
         # Main macOS Disk (VirtIO)
         "-drive", f"id=main_disk,if=none,format=qcow2,file={paths['main_disk']}",
         "-device", "virtio-blk-pci,drive=main_disk",
@@ -83,7 +89,8 @@ def _get_macos_qemu_command(vm_name, vm_settings, mac_addr, passthrough_info=Non
             "-device", "virtio-blk-pci,drive=install_disk",
         ])
     elif installer_path:
-        print_warning(f"Installer path '{installer_path}' not found, installer will not be attached.")
+        print_warning(f"Installer path '{installer_path}' not found, "
+                      "installer will not be attached.")
 
     # --- Networking: Use reliable vmxnet3 with user networking and a defined MAC address ---
     net_config = setup_bridge_network()
@@ -97,46 +104,59 @@ def _get_macos_qemu_command(vm_name, vm_settings, mac_addr, passthrough_info=Non
         "-device", "usb-kbd,bus=xhci.0",
         "-device", "usb-tablet,bus=xhci.0",
     ])
-        
+
     # --- Shared Folder (Our addition) ---
     qemu_cmd.extend([
         "-fsdev", f"local,security_model=passthrough,id=fsdev0,path={paths['shared_dir']}",
         "-device", "virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share"
     ])
-        
+
     return qemu_cmd
+
 
 def _generate_smbios(model):
     """Generates a complete SMBIOS data set for a given model."""
     print_header("Generating SMBIOS...")
     cmd = [sys.executable, CONFIG['GENSMBIOS_SCRIPT'], "--model", model, "--count", "1"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                check=True, timeout=60, encoding='utf-8')
         output = result.stdout
-        type_match, serial_match, mlb_match, uuid_match, rom_match = (re.search(p, output) for p in [r"Type:\s*(\S+)", r"Serial:\s*(\S+)", r"Board Serial:\s*(\S+)", r"SmUUID:\s*(\S+)", r"ROM:\s*(\S+)"])
+        type_match, serial_match, mlb_match, uuid_match = (re.search(p, output) for p in [
+            r"Type:\s*(\S+)", r"Serial:\s*(\S+)",
+            r"Board Serial:\s*(\S+)", r"SmUUID:\s*(\S+)"
+        ])
         if not all([type_match, serial_match, mlb_match, uuid_match]):
-            print_error(f"Failed to parse SMBIOS from GenSMBIOS output for model '{model}'."); return None
-        smbios_data = {'type': type_match.group(1), 'serial': serial_match.group(1), 'mlb': mlb_match.group(1), 'sm_uuid': uuid_match.group(1)}
-        for key, value in smbios_data.items(): print_success(f"  {key.replace('_', ' ').capitalize():<13}: {value}")
+            print_error("Failed to parse SMBIOS from GenSMBIOS output for model "
+                        f"'{model}'.")
+            return None
+        smbios_data = {'type': type_match.group(1), 'serial': serial_match.group(1),
+                       'mlb': mlb_match.group(1), 'sm_uuid': uuid_match.group(1)}
+        for key, value in smbios_data.items():
+            print_success(f"  {key.replace('_', ' ').capitalize():<13}: {value}")
         return smbios_data
-    except Exception as e:
-        print_error(f"GenSMBIOS script failed: {e}"); return None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print_error(f"GenSMBIOS script failed: {e}")
+        return None
+
 
 def _find_available_nbd():
     """Finds the first available /dev/nbd device."""
-    for i in range(16): # Check nbd0 through nbd15
+    for i in range(16):  # Check nbd0 through nbd15
         device = f"/dev/nbd{i}"
         try:
             # Check if the device is in use by checking its size. If not in use, it's 0.
-            size = subprocess.check_output(['sudo', 'blockdev', '--getsize64', device]).strip()
-            if size == b'0':
+            size = subprocess.check_output(['sudo', 'blockdev', '--getsize64', device],
+                                           text=True).strip()
+            if size == '0':
                 return device
         except (subprocess.CalledProcessError, FileNotFoundError):
             # If blockdev isn't installed or device doesn't exist, we can't use it.
             continue
     return None
 
-def _surgical_rebuild_config(smbios_data, mac_addr, custom_config_path, sample_config_path, output_path):
+
+def _surgical_rebuild_config(smbios_data, mac_addr, custom_config_path, output_path):
     """
     Takes a known-good config.plist and injects the generated SMBIOS and MAC address data into it.
     """
@@ -153,15 +173,16 @@ def _surgical_rebuild_config(smbios_data, mac_addr, custom_config_path, sample_c
         generic_section["SystemUUID"] = smbios_data['sm_uuid']
         # Format the MAC address as a 6-byte hex string for the ROM value
         generic_section["ROM"] = binascii.unhexlify(mac_addr.replace(":", ""))
-        
+
         with open(output_path, 'wb') as f:
             plistlib.dump(config_data, f)
-            
+
         print_success("config.plist patched successfully with new SMBIOS and ROM.")
         return True
-    except Exception as e:
+    except (IOError, plistlib.InvalidFileException, KeyError) as e:
         print_error(f"Failed during config rebuild: {e}")
         return False
+
 
 def _build_and_patch_opencore_image(vm_name, smbios_data):
     """
@@ -170,33 +191,35 @@ def _build_and_patch_opencore_image(vm_name, smbios_data):
     """
     print_header(f"Building OpenCore Image for '{vm_name}'")
     paths = _get_vm_paths(vm_name)
-    
+
     # Create a clean build directory
     build_dir = f"/tmp/opencore_build_{os.getpid()}"
     os.makedirs(build_dir, exist_ok=True)
-    
+
     # Copy assets to the build directory
     shutil.copytree("assets/EFI", os.path.join(build_dir, "EFI"), dirs_exist_ok=True)
-    
+
     # 1. Set OpenShell.efi as the default bootloader
     boot_dir = os.path.join(build_dir, "EFI", "BOOT")
     os.makedirs(boot_dir, exist_ok=True)
-    shutil.copy(os.path.join("assets", "EFI", "OC", "Tools", "OpenShell.efi"), os.path.join(boot_dir, "BOOTx64.efi"))
+    shutil.copy(os.path.join("assets", "EFI", "OC", "Tools", "OpenShell.efi"),
+                os.path.join(boot_dir, "BOOTx64.efi"))
     print_success("Set OpenShell.efi as the default bootloader.")
 
     # 2. Create a startup.nsh script to automatically launch OpenCore
     nsh_content = r"fs0:\EFI\OC\OpenCore.efi"
     nsh_path = os.path.join(build_dir, "startup.nsh")
-    with open(nsh_path, 'w') as f:
+    with open(nsh_path, 'w', encoding='utf-8') as f:
         f.write(nsh_content)
     print_success("Created automatic startup.nsh script to launch OpenCore.")
 
     # 3. Patch config.plist
-    sample_plist_path = os.path.join(CONFIG['ASSETS_DIR'], "EFI", "Sample.plist")
     custom_config_path = os.path.join(CONFIG['ASSETS_DIR'], "EFI", "config.plist")
     final_config_path = os.path.join(build_dir, "EFI", "OC", "config.plist")
-    mac_addr = f"52:54:00:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}"
-    if not _surgical_rebuild_config(smbios_data, mac_addr, custom_config_path, sample_plist_path, final_config_path):
+    mac_addr = (f"52:54:00:{random.randint(0, 255):02x}:" 
+               f"{random.randint(0, 255):02x}:{random.randint(0, 255):02x}")
+    if not _surgical_rebuild_config(smbios_data, mac_addr,
+                                    custom_config_path, final_config_path):
         return False
 
     # 4. Build the final qcow2 image
@@ -204,62 +227,79 @@ def _build_and_patch_opencore_image(vm_name, smbios_data):
     temp_mount_point = f"/tmp/opencore_mount_{os.getpid()}"
     success = False
     try:
-        run_command_live(["qemu-img", "create", "-f", "qcow2", paths['opencore'], "512M"], check=True, quiet=True)
+        run_command_live(["qemu-img", "create", "-f", "qcow2",
+                         paths['opencore'], "512M"], check=True, quiet=True)
         run_command_live(["modprobe", "nbd"], as_root=True, check=True, quiet=True)
         nbd_device = _find_available_nbd()
         if not nbd_device:
-            print_error("No available NBD device found."); return False
-        
-        run_command_live(["qemu-nbd", "--connect", nbd_device, paths['opencore']], as_root=True, check=True, quiet=True)
-        time.sleep(1) # Crucial delay to allow the kernel to recognize the device
-        run_command_live(["mkfs.vfat", "-F", "32", nbd_device], as_root=True, check=True, quiet=True)
-        
+            print_error("No available NBD device found.")
+            return False
+
+        run_command_live(["qemu-nbd", "--connect", nbd_device,
+                         paths['opencore']], as_root=True, check=True, quiet=True)
+        time.sleep(1)  # Crucial delay to allow the kernel to recognize the device
+        run_command_live(["mkfs.vfat", "-F", "32", nbd_device],
+                         as_root=True, check=True, quiet=True)
+
         os.makedirs(temp_mount_point, exist_ok=True)
-        run_command_live(["mount", nbd_device, temp_mount_point], as_root=True, check=True, quiet=True)
-        
+        run_command_live(["mount", nbd_device, temp_mount_point],
+                         as_root=True, check=True, quiet=True)
+
         # Copy both EFI directory and the startup script to the image
-        run_command_live(["cp", "-r", os.path.join(build_dir, "EFI"), temp_mount_point], as_root=True, check=True, quiet=True)
-        run_command_live(["cp", nsh_path, temp_mount_point], as_root=True, check=True, quiet=True)
-        
+        run_command_live(["cp", "-r", os.path.join(build_dir, "EFI"),
+                         temp_mount_point], as_root=True, check=True, quiet=True)
+        run_command_live(["cp", nsh_path, temp_mount_point],
+                         as_root=True, check=True, quiet=True)
+
         run_command_live(["sync"], as_root=True, quiet=True)
         run_command_live(["umount", temp_mount_point], as_root=True, check=True, quiet=True)
-        
+
         # Verification
         print_info("Verifying created OpenCore image...")
-        run_command_live(["mount", nbd_device, temp_mount_point], as_root=True, check=True, quiet=True)
+        run_command_live(["mount", nbd_device, temp_mount_point],
+                         as_root=True, check=True, quiet=True)
         try:
-            with open(os.path.join(temp_mount_point, "EFI", "OC", "config.plist"), 'rb') as f:
+            with open(os.path.join(temp_mount_point, "EFI", "OC", "config.plist"),
+                      'rb') as f:
                 plistlib.load(f)
             if not os.path.exists(os.path.join(temp_mount_point, "startup.nsh")):
-                 raise FileNotFoundError("startup.nsh missing from final image")
+                raise FileNotFoundError("startup.nsh missing from final image")
             print_success("Verification successful: config.plist and startup.nsh are valid.")
             success = True
-        except Exception as e:
+        except (IOError, plistlib.InvalidFileException, FileNotFoundError) as e:
             print_error(f"Verification failed: {e}")
             success = False
-            
+
     finally:
         # Cleanup
         if os.path.ismount(temp_mount_point):
-            run_command_live(["umount", "-l", temp_mount_point], as_root=True, check=False, quiet=True)
+            run_command_live(["umount", "-l", temp_mount_point],
+                             as_root=True, check=False, quiet=True)
         if nbd_device:
-            run_command_live(["qemu-nbd", "--disconnect", nbd_device], as_root=True, check=False, quiet=True)
-        if os.path.exists(temp_mount_point): os.rmdir(temp_mount_point)
-        if os.path.exists(build_dir): shutil.rmtree(build_dir)
-        
+            run_command_live(["qemu-nbd", "--disconnect", nbd_device],
+                             as_root=True, check=False, quiet=True)
+        if os.path.exists(temp_mount_point):
+            os.rmdir(temp_mount_point)
+        if os.path.exists(build_dir):
+            shutil.rmtree(build_dir)
+
     return success
+
 
 def _find_installers():
     """Scans for local .img, .dmg or .iso installers."""
     installers = []
     search_dirs = ['.', CONFIG['ASSETS_DIR']]
     for directory in search_dirs:
-        if not os.path.isdir(directory): continue
+        if not os.path.isdir(directory):
+            continue
         for f in os.listdir(directory):
             if f.endswith(('.img', '.dmg', '.iso')):
                 full_path = os.path.abspath(os.path.join(directory, f))
-                if full_path not in installers: installers.append(full_path)
+                if full_path not in installers:
+                    installers.append(full_path)
     return installers
+
 
 def _get_installer_path():
     """Guides the user to select, download, or specify a path for the macOS installer."""
@@ -267,8 +307,10 @@ def _get_installer_path():
     local_installers = _find_installers()
     options = []
     if local_installers:
-        print_info("Found local installers:"); options.extend(local_installers)
-    options.extend(["Download using FetchMacOS.py script", "Enter path to installer manually", "Cancel"])
+        print_info("Found local installers:")
+        options.extend(local_installers)
+    options.extend(["Download using FetchMacOS.py script",
+                    "Enter path to installer manually", "Cancel"])
     while True:
         for i, opt in enumerate(options, 1):
             display_text = os.path.basename(opt) if os.path.exists(opt) else opt
@@ -276,58 +318,61 @@ def _get_installer_path():
         choice_str = input(f"{Style.BOLD}Choose an option: {Style.ENDC}").strip()
         try:
             choice_idx = int(choice_str) - 1
-            if not 0 <= choice_idx < len(options): raise ValueError
+            if not 0 <= choice_idx < len(options):
+                raise ValueError
             selected_option = options[choice_idx]
-            if os.path.exists(selected_option): return selected_option
-            elif selected_option.startswith("Download"):
-                run_command_live([sys.executable, CONFIG['FETCHMACOS_SCRIPT']], check=False) # Ignore return code
-                basesystem_path = "BaseSystem.dmg" # The script downloads to the root
+            if os.path.exists(selected_option):
+                return selected_option
+            if selected_option.startswith("Download"):
+                run_command_live([sys.executable, CONFIG['FETCHMACOS_SCRIPT']], check=False)
+                basesystem_path = "BaseSystem.dmg"  # The script downloads to the root
                 if os.path.exists(basesystem_path):
                     print_success(f"Download script finished. Using '{basesystem_path}'.")
                     return basesystem_path
-                else:
-                    print_error(f"Download script did not produce '{basesystem_path}'. Please choose another option.")
-                    # We loop back to the menu to let the user choose again.
-                    # We need to re-fetch the list of installers in case the download worked but the file is in a different location.
-                    local_installers = _find_installers()
-                    options = []
-                    if local_installers:
-                        options.extend(local_installers)
-                    options.extend(["Download using FetchMacOS.py script", "Enter path to installer manually", "Cancel"])
-                    continue # Re-display the menu
-            elif selected_option.startswith("Enter path"):
+                print_error(f"Download script did not produce '{basesystem_path}'. "
+                            "Please choose another option.")
+                local_installers = _find_installers()
+                options = []
+                if local_installers:
+                    options.extend(local_installers)
+                options.extend(["Download using FetchMacOS.py script",
+                                "Enter path to installer manually", "Cancel"])
+                continue  # Re-display the menu
+            if selected_option.startswith("Enter path"):
                 manual_path = input("Enter the absolute path to your .dmg or .iso file: ").strip()
-                if os.path.exists(manual_path): return manual_path
-                else: print_error(f"Path not found: {manual_path}")
-            elif selected_option == "Cancel": return None
+                if os.path.exists(manual_path):
+                    return manual_path
+                print_error(f"Path not found: {manual_path}")
+            elif selected_option == "Cancel":
+                return None
         except ValueError:
             print_warning("Invalid selection.")
+
 
 def _get_smbios_model_choice():
     """Presents the user with options for SMBIOS model generation."""
     print_header("SMBIOS Model Selection")
     print_info("Select how to determine the Mac model for SMBIOS generation.")
-    menu_items = ["Choose a model based on the macOS version (Recommended)", "Enter a model identifier manually (Advanced)"]
+    menu_items = ["Choose a model based on the macOS version (Recommended)",
+                  "Enter a model identifier manually (Advanced)"]
     choice = select_from_list(menu_items, "Select an option")
     if "Recommended" in choice:
         print_header("Select macOS Version")
-        os_choice = select_from_list(list(MACOS_RECOMMENDED_MODELS.keys()), "Select the macOS version you are installing")
+        os_choice = select_from_list(list(MACOS_RECOMMENDED_MODELS.keys()),
+                                     "Select the macOS version you are installing")
         return MACOS_RECOMMENDED_MODELS[os_choice]
-    else:
-        while True:
-            model = input(f"{Style.BOLD}Enter Mac model (e.g., iMacPro1,1): {Style.ENDC}").strip()
-            if model: return model
-            print_warning("Model cannot be empty.")
+    while True:
+        model = input(f"{Style.BOLD}Enter Mac model (e.g., iMacPro1,1): {Style.ENDC}").strip()
+        if model:
+            return model
+        print_warning("Model cannot be empty.")
 
-# -------------------------------------------------------------------
-# --- Main Functions (User-Facing) ---
-# -------------------------------------------------------------------
 
 def check_macos_assets():
     """Checks for assets and offers to install missing system dependencies."""
     print_header("Checking macOS Assets")
     assets_ok = True
-    
+
     required_assets = {
         "GenSMBIOS Script": CONFIG['GENSMBIOS_SCRIPT'],
         "FetchMacOS Script": CONFIG['FETCHMACOS_SCRIPT'],
@@ -336,13 +381,14 @@ def check_macos_assets():
     }
     for name, path in required_assets.items():
         if not os.path.exists(path):
-            print_error(f"Asset '{name}' not found at: {path}"); assets_ok = False
+            print_error(f"Asset '{name}' not found at: {path}")
+            assets_ok = False
 
     ovmf_code_paths = ["/usr/share/edk2/x64/OVMF_CODE.4m.fd", "/usr/share/OVMF/OVMF_CODE.fd"]
     ovmf_vars_paths = ["/usr/share/edk2/x64/OVMF_VARS.4m.fd", "/usr/share/OVMF/OVMF_VARS.fd"]
     found_code_path = next((path for path in ovmf_code_paths if os.path.exists(path)), None)
     found_vars_path = next((path for path in ovmf_vars_paths if os.path.exists(path)), None)
-    
+
     if not found_code_path or not found_vars_path:
         distro = detect_distro()
         distro_config = DISTRO_INFO.get(distro)
@@ -350,63 +396,88 @@ def check_macos_assets():
             ovmf_pkg = distro_config['pkgs']['ovmf']
             print_error("Required UEFI firmware (OVMF) not found.")
             install_cmd = f"sudo {distro_config['cmd']} {ovmf_pkg}"
-            if input(f"Attempt to install '{ovmf_pkg}' now with command:\n  {Style.BOLD}{install_cmd}{Style.ENDC}\n(y/N): ").strip().lower() == 'y':
+            if input(f"Attempt to install '{ovmf_pkg}' now with command:\n"
+                     f"  {Style.BOLD}{install_cmd}{Style.ENDC}\n(y/N): ").strip().lower() == 'y':
                 run_command_live(distro_config['cmd'].split() + [ovmf_pkg], as_root=True)
-                found_code_path = next((path for path in ovmf_code_paths if os.path.exists(path)), None)
-                found_vars_path = next((path for path in ovmf_vars_paths if os.path.exists(path)), None)
-    
+                found_code_path = next((path for path in ovmf_code_paths
+                                        if os.path.exists(path)), None)
+                found_vars_path = next((path for path in ovmf_vars_paths
+                                        if os.path.exists(path)), None)
+
     if found_code_path:
-        CONFIG['MACOS_UEFI_CODE'] = found_code_path; print_success(f"Found UEFI Firmware: {found_code_path}")
+        CONFIG['MACOS_UEFI_CODE'] = found_code_path
+        print_success(f"Found UEFI Firmware: {found_code_path}")
     else:
-        print_error("UEFI Firmware (OVMF_CODE.fd) still not found."); assets_ok = False
+        print_error("UEFI Firmware (OVMF_CODE.fd) still not found.")
+        assets_ok = False
     if found_vars_path:
-        CONFIG['MACOS_UEFI_VARS'] = found_vars_path; print_success(f"Found UEFI Vars Template: {found_vars_path}")
+        CONFIG['MACOS_UEFI_VARS'] = found_vars_path
+        print_success(f"Found UEFI Vars Template: {found_vars_path}")
     else:
-        print_error("UEFI Vars Template (OVMF_VARS.fd) still not found."); assets_ok = False
+        print_error("UEFI Vars Template (OVMF_VARS.fd) still not found.")
+        assets_ok = False
 
     if not shutil.which("qemu-nbd"):
-        print_error("Command 'qemu-nbd' not found. Please install 'qemu-utils'."); assets_ok = False
+        print_error("Command 'qemu-nbd' not found. Please install 'qemu-utils'.")
+        assets_ok = False
     if not shutil.which("mcopy"):
         distro = detect_distro()
         mtools_pkg = DISTRO_INFO.get(distro, {}).get("pkgs", {}).get("mtools", "mtools")
-        print_error(f"Command 'mcopy' not found. Please install '{mtools_pkg}'."); assets_ok = False
+        print_error(f"Command 'mcopy' not found. Please install '{mtools_pkg}'.")
+        assets_ok = False
 
     if not assets_ok:
-        print_warning("\nPlease resolve the missing assets/packages before proceeding."); return False
+        print_warning("\nPlease resolve the missing assets/packages before proceeding.")
+        return False
 
     print_success("All required assets and tools are present.")
     return True
 
+
 def create_new_macos_vm():
     """The main workflow for creating a new macOS VM."""
-    clear_screen(); print_header("Create New macOS VM")
+    clear_screen()
+    print_header("Create New macOS VM")
     while True:
-        vm_name = input(f"{Style.BOLD}Enter a short name for the new macOS VM (e.g., Sequoia): {Style.ENDC}").strip()
-        if not vm_name: continue
+        vm_name = input(f"{Style.BOLD}Enter a short name for the new macOS VM "
+                        f"(e.g., Sequoia): {Style.ENDC}").strip()
+        if not vm_name:
+            continue
         if os.path.exists(os.path.join(CONFIG['VMS_DIR_MACOS'], vm_name)):
-            print_warning("A VM with this name already exists."); continue
-        else: break
+            print_warning("A VM with this name already exists.")
+            continue
+        break
     installer_path = _get_installer_path()
     if not installer_path:
-        print_info("VM creation cancelled."); return
+        print_info("VM creation cancelled.")
+        return
     print_header("Configure Virtual Machine")
-    mem = input(f"{Style.BOLD}Enter Memory (e.g., 8G) [default: 4096M]: {Style.ENDC}").strip() or "4096M"
+    mem = (input(f"{Style.BOLD}Enter Memory (e.g., 8G) [default: 4096M]: {Style.ENDC}").strip() 
+          or "4096M")
     cpu = input(f"{Style.BOLD}Enter CPU cores to assign (e.g., 6): {Style.ENDC}").strip() or "2"
     vm_settings = {'mem': mem, 'cpu': cpu}
-    
-    disk_size_input = input(f"{Style.BOLD}Enter main disk size (GB) [default: 100G]: {Style.ENDC}").strip().upper() or "100G"
-    if disk_size_input.isalpha(): disk_size = "100G"
-    elif not disk_size_input.endswith(('G', 'M', 'T')): disk_size = f"{re.sub(r'[^0-9]', '', disk_size_input)}G"
-    else: disk_size = disk_size_input
-    
+
+    disk_size_input = input(f"{Style.BOLD}Enter main disk size (GB) "
+                            f"[default: 100G]: {Style.ENDC}").strip().upper() or "100G"
+    if disk_size_input.isalpha():
+        disk_size = "100G"
+    elif not disk_size_input.endswith(('G', 'M', 'T')):
+        disk_size = f"{re.sub(r'[^0-9]', '', disk_size_input)}G"
+    else:
+        disk_size = disk_size_input
+
     smbios_model = _get_smbios_model_choice()
     if not smbios_model:
-        print_info("SMBIOS model selection cancelled. Aborting VM creation."); return
-    
+        print_info("SMBIOS model selection cancelled. Aborting VM creation.")
+        return
+
     print_header("Pre-Flight Checklist")
-    print(f"VM Name: {vm_name}\nInstaller: {os.path.basename(installer_path)}\nMemory: {mem}, CPU Cores: {cpu}\nDisk Size: {disk_size}\nSMBIOS Model: {smbios_model}")
+    print(f"VM Name: {vm_name}\nInstaller: {os.path.basename(installer_path)}\n"
+          f"Memory: {mem}, CPU Cores: {cpu}\nDisk Size: {disk_size}\n"
+          f"SMBIOS Model: {smbios_model}")
     if input("\nProceed with VM creation? (Y/n): ").strip().lower() == 'n':
-        print_info("VM creation cancelled."); return
+        print_info("VM creation cancelled.")
+        return
 
     print_header(f"Creating macOS VM: {vm_name}")
     paths = _get_vm_paths(vm_name)
@@ -418,40 +489,54 @@ def create_new_macos_vm():
     print_success("Copied UEFI assets.")
 
     smbios_data = _generate_smbios(smbios_model)
-    if not smbios_data: return
-    
+    if not smbios_data:
+        return
+
     if not _build_and_patch_opencore_image(vm_name, smbios_data):
-        print_error("Failed to build the OpenCore image. Aborting."); return
-        
-    run_command_live(["qemu-img", "create", "-f", "qcow2", paths['main_disk'], disk_size], check=True)
+        print_error("Failed to build the OpenCore image. Aborting.")
+        return
+
+    run_command_live(["qemu-img", "create", "-f", "qcow2",
+                     paths['main_disk'], disk_size], check=True)
     print_success(f"Created {disk_size} main disk at {paths['main_disk']}.")
 
     print_header("Launching VM for Installation")
-    qemu_cmd = _get_macos_qemu_command(vm_name, vm_settings, installer_path=installer_path)
-    debug_mode = input("Launch in Debug Mode (to see QEMU errors in this terminal)? (y/N): ").strip().lower() == 'y'
+    mac_addr = (f"52:54:00:{random.randint(0, 255):02x}:" 
+               f"{random.randint(0, 255):02x}:{random.randint(0, 255):02x}")
+    qemu_cmd = _get_macos_qemu_command(vm_name, vm_settings,
+                                       mac_addr, installer_path=installer_path)
+    debug_mode = input("Launch in Debug Mode (to see QEMU errors in this terminal)? "
+                       "(y/N): ").strip().lower() == 'y'
     if debug_mode:
         print_info("Running QEMU command in current terminal. Press Ctrl+C to exit.")
         print(f"\n{Style.OKBLUE}▶️  Executing: {' '.join(qemu_cmd)}{Style.ENDC}\n")
-        subprocess.run(qemu_cmd)
+        subprocess.run(qemu_cmd, check=False)
     else:
         launch_in_new_terminal_and_wait([("macOS Installer", qemu_cmd)])
 
+
 def run_macos_vm():
     """Lists and runs an existing macOS VM."""
-    clear_screen(); print_header("Run Existing macOS VM")
+    clear_screen()
+    print_header("Run Existing macOS VM")
     vms_dir = CONFIG['VMS_DIR_MACOS']
-    vm_list = sorted([d for d in os.listdir(vms_dir) if os.path.isdir(os.path.join(vms_dir, d))])
+    vm_list = sorted([d for d in os.listdir(vms_dir)
+                      if os.path.isdir(os.path.join(vms_dir, d))])
     if not vm_list:
-        print_error("No macOS VMs found."); return
+        print_error("No macOS VMs found.")
+        return
     vm_name = select_from_list(vm_list, "Choose a VM to run")
-    if not vm_name: return
+    if not vm_name:
+        return
     paths = _get_vm_paths(vm_name)
-    os.makedirs(paths['shared_dir'], exist_ok=True) # Ensure shared directory exists
+    os.makedirs(paths['shared_dir'], exist_ok=True)  # Ensure shared directory exists
     if not os.path.exists(paths['main_disk']):
-        print_error(f"Main disk for '{vm_name}' not found. Cannot run."); return
+        print_error(f"Main disk for '{vm_name}' not found. Cannot run.")
+        return
 
     print_header(f"Configure Run Settings for {vm_name}")
-    mem = input(f"{Style.BOLD}Enter Memory (e.g., 8G) [default: 4096M]: {Style.ENDC}").strip() or "4096M"
+    mem = (input(f"{Style.BOLD}Enter Memory (e.g., 8G) [default: 4096M]: {Style.ENDC}").strip() 
+          or "4096M")
     cpu = input(f"{Style.BOLD}Enter CPU cores to assign (e.g., 6): {Style.ENDC}").strip() or "2"
     vm_settings = {'mem': mem, 'cpu': cpu}
 
@@ -461,30 +546,40 @@ def run_macos_vm():
         if installer_path:
             print_info(f"Attaching installer: {os.path.basename(installer_path)}")
 
-    mac_addr = f"52:54:00:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}"
-    qemu_cmd = _get_macos_qemu_command(vm_name, vm_settings, mac_addr, installer_path=installer_path)
-    debug_mode = input("Launch in Debug Mode (to see QEMU errors in this terminal)? (y/N): ").strip().lower() == 'y'
+    mac_addr = (f"52:54:00:{random.randint(0, 255):02x}:" 
+               f"{random.randint(0, 255):02x}:{random.randint(0, 255):02x}")
+    qemu_cmd = _get_macos_qemu_command(vm_name, vm_settings,
+                                       mac_addr, installer_path=installer_path)
+    debug_mode = input("Launch in Debug Mode (to see QEMU errors in this terminal)? "
+                       "(y/N): ").strip().lower() == 'y'
     if debug_mode:
         print_info("Running QEMU command in current terminal. Press Ctrl+C to exit.")
         print(f"\n{Style.OKBLUE}▶️  Executing: {' '.join(qemu_cmd)}{Style.ENDC}\n")
-        subprocess.run(qemu_cmd)
+        subprocess.run(qemu_cmd, check=False)
     else:
         launch_in_new_terminal_and_wait([("Run macOS VM", qemu_cmd)])
 
+
 def nuke_and_recreate_macos_vm():
     """Nukes the identity (SMBIOS) of a VM and re-patches OpenCore."""
-    clear_screen(); print_header("Nuke & Recreate VM Identity")
+    clear_screen()
+    print_header("Nuke & Recreate VM Identity")
     vms_dir = CONFIG['VMS_DIR_MACOS']
-    vm_list = sorted([d for d in os.listdir(vms_dir) if os.path.isdir(os.path.join(vms_dir, d))])
+    vm_list = sorted([d for d in os.listdir(vms_dir)
+                      if os.path.isdir(os.path.join(vms_dir, d))])
     if not vm_list:
-        print_error("No macOS VMs found."); return
+        print_error("No macOS VMs found.")
+        return
     vm_name = select_from_list(vm_list, "Choose a VM to nuke")
-    if not vm_name: return
-    print_warning(f"This will generate a new Serial, MLB, and SmUUID for '{vm_name}'.\nThis can be useful for iMessage/FaceTime activation issues.")
+    if not vm_name:
+        return
+    print_warning(f"This will generate a new Serial, MLB, and SmUUID for '{vm_name}'.\n"
+                  "This can be useful for iMessage/FaceTime activation issues.")
     if input("Are you sure you want to proceed? (y/N): ").strip().lower() != 'y':
-        print_info("Operation cancelled."); return
+        print_info("Operation cancelled.")
+        return
     paths = _get_vm_paths(vm_name)
-    
+
     # Forcefully remove the old OpenCore image to prevent corruption issues
     if os.path.exists(paths['opencore']):
         remove_file(paths['opencore'], as_root=True)
@@ -492,29 +587,40 @@ def nuke_and_recreate_macos_vm():
 
     smbios_model = _get_smbios_model_choice()
     if not smbios_model:
-        print_info("SMBIOS model selection cancelled. Aborting nuke."); return
+        print_info("SMBIOS model selection cancelled. Aborting nuke.")
+        return
     smbios_data = _generate_smbios(smbios_model)
-    if not smbios_data: return
+    if not smbios_data:
+        return
     if not _build_and_patch_opencore_image(vm_name, smbios_data):
-        print_error("Failed to build the new OpenCore image. Aborting."); return
-    print_success(f"Identity for '{vm_name}' has been successfully nuked and recreated with model {smbios_model}.")
+        print_error("Failed to build the new OpenCore image. Aborting.")
+        return
+    print_success(f"Identity for '{vm_name}' has been successfully nuked and "
+                  f"recreated with model {smbios_model}.")
+
 
 def delete_macos_vm():
     """Completely deletes a macOS VM directory."""
-    clear_screen(); print_header("Delete macOS VM Completely")
+    clear_screen()
+    print_header("Delete macOS VM Completely")
     vms_dir = CONFIG['VMS_DIR_MACOS']
-    vm_list = sorted([d for d in os.listdir(vms_dir) if os.path.isdir(os.path.join(vms_dir, d))])
+    vm_list = sorted([d for d in os.listdir(vms_dir)
+                      if os.path.isdir(os.path.join(vms_dir, d))])
     if not vm_list:
-        print_error("No macOS VMs found."); return
+        print_error("No macOS VMs found.")
+        return
     vm_name = select_from_list(vm_list, "Choose a VM to delete")
-    if not vm_name: return
-    print_warning(f"This will permanently delete the entire VM '{vm_name}', including its virtual disk.\nThis action CANNOT be undone.")
+    if not vm_name:
+        return
+    print_warning(f"This will permanently delete the entire VM '{vm_name}', "
+                  "including its virtual disk.\nThis action CANNOT be undone.")
     confirm = input(f"To confirm, please type the name of the VM ({vm_name}): ").strip()
     if confirm == vm_name:
         remove_dir(_get_vm_paths(vm_name)['dir'])
         print_success(f"VM '{vm_name}' has been deleted.")
     else:
         print_error("Confirmation failed. Aborting.")
+
 
 def macos_vm_menu():
     """Main menu for macOS VM management."""
@@ -524,7 +630,8 @@ def macos_vm_menu():
         return
     while True:
         clear_screen()
-        print(f"\n{Style.HEADER}{Style.BOLD}macOS VM Management{Style.ENDC}\n───────────────────────────────────────────────")
+        print(f"\n{Style.HEADER}{Style.BOLD}macOS VM Management{Style.ENDC}\n"
+              "───────────────────────────────────────────────")
         print(f"{Style.OKBLUE}1.{Style.ENDC} {Style.BOLD}Create New macOS VM{Style.ENDC}")
         print(f"{Style.OKCYAN}2.{Style.ENDC} {Style.BOLD}Run Existing macOS VM{Style.ENDC}")
         print(f"{Style.OKGREEN}3.{Style.ENDC} {Style.BOLD}Nuke & Recreate VM Identity{Style.ENDC}")
@@ -533,11 +640,16 @@ def macos_vm_menu():
         print("───────────────────────────────────────────────")
         choice = input(f"{Style.BOLD}Select an option [1-5]: {Style.ENDC}").strip()
         action_taken = True
-        if choice == "1": create_new_macos_vm()
-        elif choice == "2": run_macos_vm()
-        elif choice == "3": nuke_and_recreate_macos_vm()
-        elif choice == "4": delete_macos_vm()
-        elif choice == "5": break
+        if choice == "1":
+            create_new_macos_vm()
+        elif choice == "2":
+            run_macos_vm()
+        elif choice == "3":
+            nuke_and_recreate_macos_vm()
+        elif choice == "4":
+            delete_macos_vm()
+        elif choice == "5":
+            break
         else:
             print_warning("Invalid option.")
             action_taken = False
