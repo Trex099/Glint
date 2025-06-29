@@ -205,6 +205,38 @@ def nuke_and_recreate_windows_vm():
     launch_in_new_terminal_and_wait([("Booting VM", qemu_cmd)])
 
 
+def delete_windows_vm():
+    """
+    Completely deletes a Windows VM directory.
+    """
+    clear_screen()
+    print_header("Delete Windows VM Completely")
+
+    vms_dir = CONFIG['VMS_DIR_WINDOWS']
+    if not os.path.isdir(vms_dir) or not os.listdir(vms_dir):
+        print_error("No Windows VMs found to list.")
+        return
+
+    vm_list = sorted([d for d in os.listdir(vms_dir) if os.path.isdir(os.path.join(vms_dir, d))])
+    if not vm_list:
+        print_error("No Windows VMs found.")
+        return
+
+    vm_name = select_from_list(vm_list, "Choose a VM to delete")
+    if not vm_name:
+        return
+
+    print_warning(f"This will permanently delete the entire VM '{vm_name}', "
+                  "including its virtual disk.\nThis action CANNOT be undone.")
+    confirm = input(f"To confirm, please type the name of the VM ({vm_name}): ").strip()
+    if confirm == vm_name:
+        from core_utils import remove_dir
+        remove_dir(get_vm_paths(vm_name)['dir'])
+        print_success(f"VM '{vm_name}' has been deleted.")
+    else:
+        print_error("Confirmation failed. Aborting.")
+
+
 def windows_vm_menu():
     """
     Displays the Windows VM menu.
@@ -216,10 +248,11 @@ def windows_vm_menu():
               "───────────────────────────────────────────────")
         print(f"{Style.OKBLUE}1.{Style.ENDC} {Style.BOLD}Create New Windows VM{Style.ENDC}")
         print(f"{Style.OKCYAN}2.{Style.ENDC} {Style.BOLD}Run Existing Windows VM{Style.ENDC}")
-        print(f"{Style.OKGREEN}3.{Style.ENDC} {Style.BOLD}Nuke & Recreate VM Identity{Style.ENDC}")
-        print(f"{Style.WARNING}4.{Style.ENDC} {Style.BOLD}Return to Main Menu{Style.ENDC}")
+        print(f"{Style.OKGREEN}3.{Style.ENDC} {Style.BOLD}Nuke & Boot a Fresh Session{Style.ENDC}")
+        print(f"{Style.FAIL}4.{Style.ENDC} {Style.BOLD}Delete Windows VM Completely{Style.ENDC}")
+        print(f"{Style.WARNING}5.{Style.ENDC} {Style.BOLD}Return to Main Menu{Style.ENDC}")
         print("───────────────────────────────────────────────")
-        choice = input(f"{Style.BOLD}Select an option [1-4]: {Style.ENDC}").strip()
+        choice = input(f"{Style.BOLD}Select an option [1-5]: {Style.ENDC}").strip()
         action_taken = True
         if choice == "1":
             create_new_windows_vm()
@@ -228,6 +261,8 @@ def windows_vm_menu():
         elif choice == "3":
             nuke_and_recreate_windows_vm()
         elif choice == "4":
+            delete_windows_vm()
+        elif choice == "5":
             break
         else:
             print_warning("Invalid option.")
