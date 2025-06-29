@@ -20,6 +20,7 @@ CONFIG = {
     "SHARED_DIR_MOUNT_TAG": "host_share",
 
     "VMS_DIR_MACOS": "vms_macos",
+    "VMS_DIR_WINDOWS": "vms_windows",
 
     "MACOS_UEFI_CODE": "",
     "MACOS_UEFI_VARS": "",
