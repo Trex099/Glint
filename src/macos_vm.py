@@ -53,8 +53,8 @@ def _get_macos_qemu_command(vm_name, vm_settings, mac_addr, passthrough_info=Non
     qemu_cmd = [
         "qemu-system-x86_64", "-enable-kvm", "-m", vm_settings['mem'],
         
-        # --- CPU: Use a spoofed CPU model for maximum compatibility (from sequoia.sh analysis) ---
-        "-cpu", "Skylake-Client,kvm=off",
+        # --- CPU: Use a spoofed model but disable unsupported features to prevent warnings ---
+        "-cpu", "Skylake-Client,-hle,-rtm,kvm=off",
         
         "-machine", "q35,accel=kvm",
         "-smp", f"{cores},sockets=1,cores={cores},threads=1",
