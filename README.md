@@ -1,8 +1,25 @@
 # ✨ Glint: The Universal VM Manager
 
-Glint is not just a VM manager. It's a revolutionary tool for creating and managing **forensically clean, disposable, yet persistent** virtual machines. It's designed for developers, security researchers, and privacy-conscious users who need the ability to instantly generate a brand-new, untraceable machine identity for tasks like malware analysis, penetration testing, or simply ensuring absolute privacy.
+Have you ever spent hours trying to get a macOS VM to boot, only to be met with a black screen and a wall of cryptic errors? Have you ever wished you could just *have* a clean, working Linux or macOS environment without the headache of manual setup, configuration files, and endless forum searches?
 
-This project was born from a single, powerful idea: what if you could have a virtual machine that leaves no trace, has no history, and can be reborn as a completely new device at any moment, all without the hours of manual setup? Glint makes this a reality for both Linux and macOS.
+**Glint is the answer.**
+
+This isn't just another VM manager. Glint is a smart, user-friendly tool built to do one thing perfectly: get you a powerful, fully functional virtual machine with the least amount of effort. It's for anyone who has ever thought, "This should be easier."
+
+---
+
+## ✨ Why Glint? Because You Have Better Things to Do.
+
+Glint was built to solve the most frustrating parts of virtualization.
+
+*   **For the macOS Enthusiast:**
+    **Finally, a macOS VM that just works.** Glint is the star of the show here. It automates the entire OpenCore configuration, SMBIOS generation, and hardware ID synchronization. This means you get a VM that not only boots, but also has the best possible chance of working with Apple services like iMessage and iCloud, all without you ever having to touch a `.plist` file.
+
+*   **For the Everyday User:**
+    **Get a full desktop in minutes.** Whether you want to try out a new Linux distro or need a secure macOS environment, Glint guides you through a simple, menu-driven process. It even detects and helps you install any missing dependencies. No command-line wizardry required.
+
+*   **For the Developer & Security Pro:**
+    **Power and privacy, simplified.** Underneath the simple interface is a powerful engine. Glint's unique "disposable" architecture lets you instantly reset your VM to a pristine, forensically clean state with a new identity (new serials, new MAC address), perfect for testing, malware analysis, or ensuring absolute privacy.
 
 ---
 
@@ -10,19 +27,17 @@ This project was born from a single, powerful idea: what if you could have a vir
 
 Glint is packed with features designed to make VM management powerful, flexible, and simple.
 
+*   **Zero-Config macOS:** Forget the nightmare of manually configuring OpenCore. Glint handles everything, building a perfectly patched bootloader for your VM every single time.
+*   **iMessage & Apple Services Ready:** Glint automatically generates and injects the necessary serial numbers and hardware IDs, giving you the best chance at compatibility with Apple services out of the box.
 *   **Disposable & Persistent Architecture:** The core of Glint. Keep your OS installation pristine while having the ability to instantly "nuke" a session, creating a forensically clean machine with a new identity (new serial numbers, UUIDs, MAC addresses) without reinstalling.
 *   **Advanced GPU Passthrough (Linux VMs):**
     *   **Live Passthrough:** Dedicate a GPU, USB controller, or NVMe drive to your Linux VM for near-native performance.
     *   **Automated Host Preparation:** The script handles stopping your display manager, binding drivers to `vfio-pci`, and safely restoring your host session when the VM shuts down.
     *   **System Compatibility Checker:** A built-in tool to check your IOMMU groups, kernel settings, and hardware configuration for passthrough readiness.
-*   **Automated macOS Setup:**
-    *   **SMBIOS & ROM Generation:** Automatically generates valid Mac serial numbers, board IDs, and a synchronized ROM value using `GenSMBIOS` to ensure compatibility with Apple services.
-    *   **Pre-configured OpenCore:** Uses a known-good OpenCore configuration, patching it with your VM's unique identity to ensure a smooth boot process.
-    *   **Installer Downloader:** Includes a script to fetch macOS recovery images directly from Apple's servers if you don't have one.
 *   **User-Friendly TUI:** A simple, terminal-based interface that guides you through every step, from creation to execution.
-*   **Built-in Dependency Checker:** Automatically detects your Linux distribution and checks for required packages like QEMU and OVMF, offering to install them for you.
 *   **Automatic Dependency Resolution:** The script automatically detects your Linux distribution and offers to install any missing dependencies, such as QEMU, OVMF, and other required tools.
 *   **Integrated File Transfer:** Easily copy files and folders to and from a running Linux VM using SCP, with port forwarding handled automatically.
+*   **Installer Downloader:** Includes a script to fetch macOS recovery images directly from Apple's servers if you don't have one.
 
 ---
 
