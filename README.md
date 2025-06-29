@@ -1,4 +1,4 @@
-# ✨ Glint: The Disposable & Persistent VM Environment
+# ✨ Glint: The Universal VM Manager
 
 Glint is not just a VM manager. It's a revolutionary tool for creating and managing **forensically clean, disposable, yet persistent** virtual machines. It's designed for developers, security researchers, and privacy-conscious users who need the ability to instantly generate a brand-new, untraceable machine identity for tasks like malware analysis, penetration testing, or simply ensuring absolute privacy.
 
