@@ -272,6 +272,29 @@ def setup_bridge_network():
     return f"user,id=net0,dns={dns_server}"
 
 
+import requests
+from tqdm import tqdm
+
+def download_file(url, destination):
+    """
+    Downloads a file from a URL to a destination, with a progress bar.
+    """
+    try:
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(destination, 'wb') as f:
+                pbar = tqdm(total=int(r.headers.get('content-length', 0)), unit='B', unit_scale=True, desc=destination)
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+                pbar.close()
+        return True
+    except requests.exceptions.RequestException as e:
+        print_error(f"Failed to download {url}: {e}")
+        return False
+
+
 def detect_distro():
     """
     Detects the Linux distribution.

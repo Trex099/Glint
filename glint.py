@@ -10,15 +10,25 @@ import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
-from core_utils import clear_screen, print_info, print_warning, print_error, Style
+from core_utils import clear_screen, print_info, print_warning, print_error, Style, download_file
 from linux_vm import linux_vm_menu
 from macos_vm import macos_vm_menu
 from windows_vm import windows_vm_menu
+
+def check_dependencies():
+    """
+    Checks for required dependencies and prompts the user to download them if they are missing.
+    """
+    if not os.path.exists("virtio-win.iso"):
+        print_warning("VirtIO drivers ISO not found.")
+        if input("Download it now? (y/N): ").strip().lower() == 'y':
+            download_file("https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso", "virtio-win.iso")
 
 def main_menu():
     """
     Displays the main menu and handles user input.
     """
+    check_dependencies()
     while True:
         clear_screen()
         print(f"\n{Style.HEADER}{Style.BOLD}Universal VM Manager{Style.ENDC}\n"
