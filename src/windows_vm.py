@@ -71,6 +71,21 @@ def get_vm_config(defaults):
     return config
 
 
+def find_virtio_iso_path():
+    """
+    Finds the path to the VirtIO drivers ISO.
+    """
+    print_header("Select VirtIO Drivers ISO")
+    isos = [f for f in os.listdir('.') if f.endswith('.iso') and 'virtio' in f.lower()]
+    if not isos:
+        print_error("No VirtIO drivers ISO found in the current directory.")
+        return None
+    iso_path = select_from_list(isos, "Choose a VirtIO drivers ISO") if len(isos) > 1 else isos[0]
+    iso_abs_path = os.path.abspath(iso_path)
+    print_info(f"Using VirtIO drivers: {iso_abs_path}")
+    return iso_abs_path
+
+
 def create_new_windows_vm():
     """
     Creates a new Windows VM.
@@ -92,7 +107,7 @@ def create_new_windows_vm():
     if not iso_path:
         return
 
-    virtio_path = find_iso_path()
+    virtio_path = find_virtio_iso_path()
     if not virtio_path:
         print_warning("VirtIO drivers not found. You may need to manually install them.")
 
