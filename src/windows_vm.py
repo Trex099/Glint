@@ -133,6 +133,7 @@ def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None, virtio_path=None
         "-netdev", "user,id=n1",
         "-device", "virtio-net-pci,netdev=n1",
         "-vga", "virtio",
+        "-device", "usb-tablet",
         *CONFIG["QEMU_DISPLAY"]
     ]
 
