@@ -94,14 +94,14 @@ sudo pacman -S qemu-desktop edk2-ovmf python mtools
 ### 2. Clone the Repository
 
 ```bash
-git clone [URL_to_your_GitHub_repository]
+git clone https://github.com/Trex099/Glint.git
 cd Glint
 ```
 
 ### 3. Run Glint
 
 ```bash
-python3 Glint.py
+python3 glint.py
 ```
 *Note: The script will use `sudo` internally for operations that require root privileges, such as loading kernel modules or managing system services for GPU passthrough.*
 
