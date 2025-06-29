@@ -44,6 +44,31 @@ def find_iso_path():
     return iso_abs_path
 
 
+def get_vm_config(defaults):
+    """
+    Prompts the user to configure the VM.
+    """
+    config = {}
+    print_header("Configure Virtual Machine")
+    while True:
+        mem = input(f"{Style.BOLD}Enter Memory (e.g., 4G) "
+                    f"[default: {defaults['VM_MEM']}]: {Style.ENDC}").strip().upper() \
+              or defaults['VM_MEM']
+        if re.match(r"^\d+[MG]$", mem):
+            config['VM_MEM'] = mem
+            break
+        print_warning("Invalid format. Use a number followed by 'M' or 'G'.")
+    while True:
+        cpu = input(f"{Style.BOLD}Enter CPU cores "
+                    f"[default: {defaults['VM_CPU']}]: {Style.ENDC}").strip() \
+              or defaults['VM_CPU']
+        if cpu.isdigit() and int(cpu) > 0:
+            config['VM_CPU'] = cpu
+            break
+        print_warning("Invalid input.")
+    return config
+
+
 def create_new_windows_vm():
     """
     Creates a new Windows VM.
@@ -72,10 +97,7 @@ def create_new_windows_vm():
         else:
             print_warning("Invalid input.")
 
-    vm_settings = {
-        "VM_MEM": CONFIG['VM_MEM'],
-        "VM_CPU": CONFIG['VM_CPU']
-    }
+    vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
     qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''}, iso_path=iso_path)
 
     commands_to_run = [
@@ -84,6 +106,7 @@ def create_new_windows_vm():
         ("Booting from ISO (Install your OS, then simply close this terminal window)", qemu_cmd)
     ]
     launch_in_new_terminal_and_wait(commands_to_run)
+
 
 
 def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None):
@@ -137,10 +160,7 @@ def run_windows_vm():
         print_error(f"Base disk for '{vm_name}' not found. Cannot run.")
         return
 
-    vm_settings = {
-        "VM_MEM": CONFIG['VM_MEM'],
-        "VM_CPU": CONFIG['VM_CPU']
-    }
+    vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
     qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''})
     launch_in_new_terminal_and_wait([("Booting VM", qemu_cmd)])
 
@@ -180,10 +200,7 @@ def nuke_and_recreate_windows_vm():
 
     run_command_live(["qemu-img", "create", "-f", "qcow2", "-b", paths['base'], "-F", "qcow2", paths['overlay']], as_root=False, check=True)
 
-    vm_settings = {
-        "VM_MEM": CONFIG['VM_MEM'],
-        "VM_CPU": CONFIG['VM_CPU']
-    }
+    vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
     qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''})
     launch_in_new_terminal_and_wait([("Booting VM", qemu_cmd)])
 
