@@ -27,6 +27,7 @@ def get_vm_paths(vm_name):
         "dir": vm_dir,
         "base": os.path.join(vm_dir, "base.qcow2"),
         "overlay": os.path.join(vm_dir, "overlay.qcow2"),
+        "uefi_vars": os.path.join(vm_dir, "uefi_vars.fd"),
     }
 
 
@@ -91,6 +92,10 @@ def create_new_windows_vm():
     if not iso_path:
         return
 
+    virtio_path = find_iso_path()
+    if not virtio_path:
+        print_warning("VirtIO drivers not found. You may need to manually install them.")
+
     while True:
         disk = input(f"{Style.BOLD}Enter base disk size (GB) [default: 64]: {Style.ENDC}").strip() or "64"
         if disk.isdigit() and int(disk) > 0:
@@ -99,10 +104,11 @@ def create_new_windows_vm():
             print_warning("Invalid input.")
 
     vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
-    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''}, iso_path=iso_path)
+    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''}, iso_path=iso_path, virtio_path=virtio_path)
 
     commands_to_run = [
         ("Creating directory structure", ["mkdir", "-p", paths['dir']]),
+        ("Creating UEFI variable store", ["cp", CONFIG['UEFI_VARS_TEMPLATE'], paths['uefi_vars']]),
         (f"Creating {disk}G base image", ["qemu-img", "create", "-f", "qcow2", paths['base'], f"{disk}G"]),
         ("Booting from ISO (Install your OS, then simply close this terminal window)", qemu_cmd)
     ]
@@ -110,7 +116,7 @@ def create_new_windows_vm():
 
 
 
-def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None):
+def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None, virtio_path=None):
     """
     Builds the QEMU command for a Windows VM.
     """
@@ -122,7 +128,8 @@ def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None):
         "-smp", vm_settings["VM_CPU"],
         "-uuid", ids['uuid'],
         "-drive", f"if=pflash,format=raw,readonly=on,file={CONFIG['UEFI_CODE']}",
-        "-drive", f"if=pflash,format=raw,file={paths['base']}",
+        "-drive", f"if=pflash,format=raw,file={paths['uefi_vars']}",
+        "-drive", f"file={paths['base']},if=virtio",
         "-netdev", "user,id=n1",
         "-device", "virtio-net-pci,netdev=n1",
         "-vga", "virtio",
@@ -131,6 +138,8 @@ def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None):
 
     if iso_path:
         qemu_cmd.extend(["-cdrom", iso_path])
+    if virtio_path:
+        qemu_cmd.extend(["-drive", f"file={virtio_path},media=cdrom"])
 
     return qemu_cmd
 
