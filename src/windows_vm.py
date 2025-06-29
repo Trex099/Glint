@@ -154,7 +154,7 @@ def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None, virtio_path=None
     ]
 
     if iso_path:
-        qemu_cmd.extend(["-cdrom", iso_path])
+        qemu_cmd.extend(["-boot", "d", "-cdrom", iso_path])
     if virtio_path:
         qemu_cmd.extend(["-drive", f"file={virtio_path},media=cdrom"])
 
