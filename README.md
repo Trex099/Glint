@@ -42,13 +42,18 @@ Glint is packed with features designed to make VM management powerful, flexible,
 
 ---
 
-### 🖼️ Showcase
+## 🖼️ A Glimpse of Glint
 
-*(Placeholder for a GIF showcasing the "Nuke & Recreate" feature, followed by a successful boot of a "new" machine.)*
-**[Glint in Action: A VM is "nuked" and reborn with a new identity in seconds.]**
+Glint's interface is designed to be simple, clean, and intuitive.
 
-*(Placeholder for a screenshot of a running macOS VM with a fresh user account.)*
-**[A pristine macOS environment, ready for any task.]**
+**Main Menu:** Your central hub for managing both Linux and macOS virtual machines.
+![Main Menu](assets/Showcase/MAIN_MENU.png)
+
+**macOS VM Menu:** All the tools you need for your macOS VMs, from creation to identity management.
+![macOS Menu](assets/Showcase/MACOS_MENU.png)
+
+**Linux VM Menu:** A comprehensive set of options for your Linux VMs, including advanced passthrough features.
+![Linux Menu](assets/Showcase/LINUX_MENU.png)
 
 ---
 
