@@ -76,12 +76,12 @@ def find_virtio_iso_path():
     Finds the path to the VirtIO drivers ISO.
     """
     print_header("Select VirtIO Drivers ISO")
-    isos = [f for f in os.listdir(CONFIG['ASSETS_DIR']) if f.endswith('.iso') and 'virtio' in f.lower()]
+    isos = [f for f in os.listdir('.') if f.endswith('.iso') and 'virtio' in f.lower()]
     if not isos:
-        print_error("No VirtIO drivers ISO found in the assets directory.")
+        print_error("No VirtIO drivers ISO found in the current directory.")
         return None
     iso_path = select_from_list(isos, "Choose a VirtIO drivers ISO") if len(isos) > 1 else isos[0]
-    iso_abs_path = os.path.abspath(os.path.join(CONFIG['ASSETS_DIR'], iso_path))
+    iso_abs_path = os.path.abspath(iso_path)
     print_info(f"Using VirtIO drivers: {iso_abs_path}")
     return iso_abs_path
 
