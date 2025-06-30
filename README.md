@@ -47,7 +47,7 @@ Glint is packed with features designed to make VM management powerful, flexible,
 Glint's interface is designed to be simple, clean, and intuitive.
 
 **Main Menu:** Your central hub for managing both Linux and macOS virtual machines.
-![Main Menu](assets/Showcase/MAIN_MENU.png)
+![Main Menu](assets/Showcase/MAINMENU.png)
 
 **macOS VM Menu:** All the tools you need for your macOS VMs, from creation to identity management.
 ![macOS Menu](assets/Showcase/MACOS_MENU.png)
@@ -158,7 +158,6 @@ We do not provide support for and are not responsible for any legal issues that 
 
 Glint is an actively developed project. Here's what we have planned for the future:
 
-*   **Windows VM Manager:** The next major feature will be the addition of a full-featured Windows VM manager, complete with the same "Disposable & Persistent" philosophy.
 *   **Snapshot Management:** The ability to take and restore snapshots of your persistent VM states.
 *   **GUI Frontend:** A simple graphical user interface for users who prefer a visual workflow.
 

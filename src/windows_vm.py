@@ -119,15 +119,24 @@ def create_new_windows_vm():
             print_warning("Invalid input.")
 
     vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
+    
+    # --- Create VM files BEFORE launching ---
+    print_info("Preparing VM files...")
+    run_command_live(["mkdir", "-p", paths['dir']], quiet=True)
+    run_command_live(["cp", CONFIG['UEFI_VARS_TEMPLATE'], paths['uefi_vars']], quiet=True)
+    run_command_live(["qemu-img", "create", "-f", "qcow2", paths['base'], f"{disk}G"], quiet=True)
+    print_success("VM files created successfully.")
+
     qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''}, iso_path=iso_path, virtio_path=virtio_path)
 
-    commands_to_run = [
-        ("Creating directory structure", ["mkdir", "-p", paths['dir']]),
-        ("Creating UEFI variable store", ["cp", CONFIG['UEFI_VARS_TEMPLATE'], paths['uefi_vars']]),
-        (f"Creating {disk}G base image", ["qemu-img", "create", "-f", "qcow2", paths['base'], f"{disk}G"]),
-        ("Booting from ISO (Install your OS, then simply close this terminal window)", qemu_cmd)
-    ]
-    launch_in_new_terminal_and_wait(commands_to_run)
+    debug_mode = input("Launch in Debug Mode (to see QEMU errors in this terminal)? (y/N): ").strip().lower() == 'y'
+    if debug_mode:
+        print_info("Running QEMU command in current terminal. Press Ctrl+C to exit.")
+        import subprocess
+        print(f"\n{Style.OKBLUE}▶️  Executing: {' '.join(qemu_cmd)}{Style.ENDC}\n")
+        subprocess.run(qemu_cmd, check=False)
+    else:
+        launch_in_new_terminal_and_wait([("Booting from ISO", qemu_cmd)])
 
 
 
@@ -142,19 +151,21 @@ def _get_qemu_command(vm_name, vm_settings, ids, iso_path=None, virtio_path=None
         "-enable-kvm",
         "-m", vm_settings["VM_MEM"],
         "-smp", vm_settings["VM_CPU"],
+        "-cpu", "host",
         "-uuid", ids['uuid'],
         "-drive", f"if=pflash,format=raw,readonly=on,file={CONFIG['UEFI_CODE']}",
         "-drive", f"if=pflash,format=raw,file={paths['uefi_vars']}",
         "-drive", f"file={disk_path},if=virtio",
         "-netdev", "user,id=n1",
-        "-device", "virtio-net-pci,netdev=n1",
+        "-device", "e1000e,netdev=n1",
         "-vga", "virtio",
+        "-device", "qemu-xhci",
         "-device", "usb-tablet",
         *CONFIG["QEMU_DISPLAY"]
     ]
 
     if iso_path:
-        qemu_cmd.extend(["-boot", "d", "-cdrom", iso_path])
+        qemu_cmd.extend(["-cdrom", iso_path])
     if virtio_path:
         qemu_cmd.extend(["-drive", f"file={virtio_path},media=cdrom"])
 
@@ -192,7 +203,7 @@ def run_windows_vm():
         run_command_live(["qemu-img", "create", "-f", "qcow2", "-b", paths['base'], "-F", "qcow2", paths['overlay']], as_root=False, check=True)
 
     vm_settings = get_vm_config({"VM_MEM": CONFIG['VM_MEM'], "VM_CPU": CONFIG['VM_CPU']})
-    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''}, use_overlay=True)
+    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4()), 'mac': ''}, use_overlay=False)
     launch_in_new_terminal_and_wait([("Booting VM", qemu_cmd)])
 
 

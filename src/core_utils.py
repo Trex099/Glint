@@ -78,7 +78,7 @@ def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
     try:
         if quiet:
             # For quiet execution, capture output and only show it on error.
-            with subprocess.Popen(cmd_list, capture_output=True, text=True) as process:
+            with subprocess.Popen(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
                 stdout, stderr = process.communicate()
                 if process.returncode != 0:
                     print_error(f"Command failed with exit code {process.returncode}")
@@ -132,6 +132,11 @@ def _create_launcher_script(script_path, commands, as_root=False):
     """
     with open(script_path, 'w', encoding='utf-8') as f:
         f.write("#!/bin/bash\nset -e\n")
+        
+        # Preserve XDG_RUNTIME_DIR if it's set
+        if 'XDG_RUNTIME_DIR' in os.environ:
+            f.write(f"export XDG_RUNTIME_DIR={os.environ['XDG_RUNTIME_DIR']}\n")
+
         f.write(f"echo -e '{Style.HEADER}--- VM LAUNCHER "
                 f"(This terminal will close when the VM shuts down) ---{Style.ENDC}'\n\n")
         for title, cmd_list in commands:

@@ -16,7 +16,7 @@ CONFIG = {
     "QEMU_BINARY": "qemu-system-x86_64",
     "UEFI_CODE": "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
     "UEFI_VARS_TEMPLATE": "/usr/share/edk2/x64/OVMF_VARS.4m.fd",
-    "QEMU_DISPLAY": ["-display", "gtk,gl=on,show-cursor=on,grab-on-hover=on"],
+    "QEMU_DISPLAY": ["-display", "sdl", "-vga", "std"],
     "SHARED_DIR_MOUNT_TAG": "host_share",
 
     "VMS_DIR_MACOS": "vms_macos",
