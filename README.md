@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Trex099/Glint/main/assets/Showcase/LOGO.png" alt="Glint Logo" width="150">
+  <img src="https://raw.githubusercontent.com/Trex099/Glint/main/assets/Showcase/LOGO.png" alt="Glint Logo" width="250">
   <h1 align="center">Glint</h1>
   <p align="center">
     <strong>The Universal VM Manager That Just Works.</strong>
