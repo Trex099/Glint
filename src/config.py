@@ -1,4 +1,6 @@
 
+# Made by trex099
+# https://github.com/Trex099/Glint
 """
 This module contains configuration settings for the Universal VM Manager.
 
@@ -14,16 +16,23 @@ CONFIG = {
     "VM_CPU": "2",
     "BASE_DISK_SIZE": "20",
     "QEMU_BINARY": "qemu-system-x86_64",
-    "UEFI_CODE": "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
-    "UEFI_VARS_TEMPLATE": "/usr/share/edk2/x64/OVMF_VARS.4m.fd",
+    
+    # Define lists of potential paths for firmware. The first one found will be used.
+    "UEFI_CODE_PATHS": [
+        "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
+        "/usr/share/OVMF/OVMF_CODE.fd"
+    ],
+    "UEFI_VARS_PATHS": [
+        "/usr/share/edk2/x64/OVMF_VARS.4m.fd",
+        "/usr/share/OVMF/OVMF_VARS.fd"
+    ],
+
     "QEMU_DISPLAY": ["-display", "sdl", "-vga", "std"],
     "SHARED_DIR_MOUNT_TAG": "host_share",
 
     "VMS_DIR_MACOS": "vms_macos",
     "VMS_DIR_WINDOWS": "vms_windows",
 
-    "MACOS_UEFI_CODE": "",
-    "MACOS_UEFI_VARS": "",
     "OPENCORE_IMG": "assets/OpenCore.qcow2",
     "GENSMBIOS_SCRIPT": "assets/SMBIOS/GenSMBIOS.py",
     "FETCHMACOS_SCRIPT": "assets/fetch-macOS-v2.py",
