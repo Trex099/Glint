@@ -1,4 +1,18 @@
-# ✨ Glint: The Universal VM Manager
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Trex099/Glint/main/assets/Showcase/LOGO.png" alt="Glint Logo" width="150">
+  <h1 align="center">Glint</h1>
+  <p align="center">
+    <strong>The Universal VM Manager That Just Works.</strong>
+    <br />
+    Create, manage, and secure macOS, Windows, and Linux VMs with zero fuss.
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/python-3.x-blue.svg" alt="Python 3.x">
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg" alt="Platforms">
+    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
+    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
+  </p>
+</p>
 
 Have you ever spent hours trying to get a macOS VM to boot, only to be met with a black screen and a wall of cryptic errors? Have you ever wished you could just *have* a clean, working Linux or macOS environment without the headache of manual setup, configuration files, and endless forum searches?
 
@@ -28,6 +42,8 @@ Glint was built to solve the most frustrating parts of virtualization.
 Glint is packed with features designed to make VM management powerful, flexible, and simple.
 
 *   **Zero-Config macOS:** Forget the nightmare of manually configuring OpenCore. Glint handles everything, building a perfectly patched bootloader for your VM every single time.
+*   **macOS GPU Passthrough:** A guided menu to pass through a physical GPU (iGPU or dGPU) to your macOS VM for near-native graphics performance.
+*   **Automated File Transfer:** An integrated SFTP utility to easily transfer large files to and from any running VM, with automatic port forwarding.
 *   **iMessage & Apple Services Ready:** Glint automatically generates and injects the necessary serial numbers and hardware IDs, giving you the best chance at compatibility with Apple services out of the box.
 *   **Disposable & Persistent Architecture:** The core of Glint. Keep your OS installation pristine while having the ability to instantly "nuke" a session, creating a forensically clean machine with a new identity (new serial numbers, UUIDs, MAC addresses) without reinstalling.
 *   **Advanced GPU Passthrough (Linux VMs):**
@@ -113,7 +129,14 @@ git clone https://github.com/Trex099/Glint.git
 cd Glint
 ```
 
-### 3. Run Glint
+### 3. Place Installers
+
+For the "Create VM" options to work, you **must** place your OS installer files in the `Glint` directory:
+*   **macOS:** A full installer `.iso` or a `BaseSystem.dmg`/`.img` file.
+*   **Windows:** An `.iso` file. A `virtio-win-*.iso` file is also highly recommended.
+*   **Linux:** A standard `.iso` file.
+
+### 4. Run Glint
 
 That's it. The script handles the rest.
 
@@ -127,6 +150,37 @@ When you run Glint for the first time, it will:
 3.  If anything is missing, it will provide you with the exact command to install it and offer to run it for you.
 
 *Note: The script will use `sudo` internally for operations that require root privileges, such as installing packages or managing system services for GPU passthrough.*
+
+---
+
+## ⚡ Advanced Features
+
+### 🖥️ macOS GPU Passthrough
+
+This feature allows you to give a macOS VM direct control over one of your host's physical GPUs.
+
+> **⚠️ WARNING: Advanced Users Only**
+> This is an advanced feature that requires your host system to be properly configured for **IOMMU (VT-d / AMD-Vi)** in your BIOS/UEFI and with the correct kernel parameters. Glint only handles the VM configuration; it does not set up your host. Incorrectly passing through a device can lead to host system instability.
+
+**How to use it:**
+1.  Navigate to the `macOS VM Management` menu.
+2.  Select `Passthrough & Performance`.
+3.  The script will guide you through selecting a VM and a GPU. It will automatically patch the VM's configuration for you.
+
+### 📂 File Transfer (SFTP)
+
+Glint includes a simple menu to transfer large files or directories to and from any running VM.
+
+**How to use it:**
+1.  **Enable SSH in the Guest VM (One-time setup):**
+    *   **macOS:** Open the Terminal app inside your macOS VM and run:
+        ```sh
+        sudo systemsetup -setremotelogin on
+        ```
+    *   **Linux:** Install the OpenSSH server (e.g., `sudo apt install openssh-server` or `sudo pacman -S openssh`) and ensure the `sshd` service is running.
+    *   **Windows:** Enable the OpenSSH Server optional feature.
+2.  From the appropriate VM menu in Glint, select `Transfer Files (SFTP)`.
+3.  Follow the prompts to enter your VM's username, password, and the file paths.
 
 ---
 
