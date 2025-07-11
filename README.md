@@ -60,16 +60,7 @@ Glint is packed with features designed to make VM management powerful, flexible,
 
 ## 🖼️ A Glimpse of Glint
 
-Glint's interface is designed to be simple, clean, and intuitive.
-
-**Main Menu:** Your central hub for managing both Linux and macOS virtual machines.
-![Main Menu](assets/Showcase/MAINMENU.png)
-
-**macOS VM Menu:** All the tools you need for your macOS VMs, from creation to identity management.
-![macOS Menu](assets/Showcase/MACOS_MENU.png)
-
-**Linux VM Menu:** A comprehensive set of options for your Linux VMs, including advanced passthrough features.
-![Linux Menu](assets/Showcase/LINUX_MENU.png)
+COMING SOON!
 
 ---
 
