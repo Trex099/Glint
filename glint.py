@@ -10,7 +10,73 @@ import importlib.util
 import time
 import shutil
 import json
+import pexpect
+import getpass
+            
+def run_aur_install(package_name, console, live_updater):
+    """
+    Installs an AUR package using pexpect, correctly handling sudo and reinstall prompts.
+    
+    Args:
+        package_name (str): The name of the AUR package to install.
+        console (rich.console.Console): The console object for printing.
+        live_updater (function): A function to call to refresh the live display.
+    """
+    original_user = os.environ.get('SUDO_USER')
+    command = f"yay -S --noconfirm {package_name}"
+    
+    if os.geteuid() == 0 and original_user:
+        console.print(f"[yellow]Running as root. Dropping privileges to user '{original_user}' for yay...[/]")
+        command = f"sudo -u {original_user} {command}"
+    elif os.geteuid() == 0:
+        console.print("[red]Running as root, but could not determine original user (SUDO_USER not set).[/]")
+        return False
+        
+    try:
+        child = pexpect.spawn(command, timeout=600, encoding='utf-8')
+        sudo_password = None
 
+        while True:
+            # Add the "Proceed with installation?" prompt to our list of expected patterns
+            index = child.expect([
+                r"\[sudo\] password for .*: ",      # 0: Sudo password prompt
+                r"==> Packages to cleanBuild\?",   # 1: Clean build prompt
+                r"==> Diffs to show\?",            # 2: Diffs prompt
+                r":: Proceed with installation\? \[Y/n\]", # 3: NEW - Reinstall prompt
+                pexpect.EOF,                       # 4: End of command
+                pexpect.TIMEOUT                    # 5: Timeout
+            ])
+
+            live_updater()
+
+            if index == 0:
+                console.print("[yellow]Sudo password required for yay to continue...[/]")
+                if sudo_password is None:
+                    prompt = f"Password for {original_user}: " if original_user else "Password: "
+                    sudo_password = getpass.getpass(prompt)
+                child.sendline(sudo_password)
+            elif index == 1:
+                child.sendline("N") # Answer "None" to cleanBuild
+            elif index == 2:
+                child.sendline("N") # Answer "None" to diffs
+            elif index == 3:
+                child.sendline("y") # Answer "Yes" to proceed with installation
+            elif index == 4: # EOF
+                child.close()
+                return child.exitstatus == 0
+            elif index == 5: # Timeout
+                console.print(f"[red]Timeout: yay took too long to install {package_name}.[/]")
+                return False
+
+    except pexpect.exceptions.ExceptionPexpect as e:
+        console.print(f"[red]An unexpected pexpect error occurred: {e}[/]")
+        return False
+    except Exception as e:
+        console.print(f"[red]A general error occurred during AUR installation: {e}[/]")
+        return False
+
+    
+    
 def initial_dependency_check():
     """
     Checks and installs core dependencies with a rich TUI, with improved error handling and clearer messaging.
@@ -25,6 +91,8 @@ def initial_dependency_check():
         print("Bootstrapping: 'rich' library not found. Attempting to install...")
         try:
             if os.path.exists("/usr/bin/pacman"):
+                print("Bootstrapping: Synchronizing pacman databases (sudo pacman -Sy)...")
+                subprocess.run(["sudo", "pacman", "-Sy", "--noconfirm"], check=True)
                 subprocess.run(["sudo", "pacman", "-S", "--noconfirm", "python-rich"], check=True)
             elif os.path.exists("/usr/bin/apt"):
                 subprocess.run(["sudo", "apt", "update"], check=True)
@@ -51,14 +119,18 @@ def initial_dependency_check():
         pass
 
     tasks = {
-        "QEMU": {"status": "⚪ Pending", "check": lambda: shutil.which("qemu-system-x86_64"), "arch": "qemu-desktop", "debian": "qemu-system-x86"},
-        "OVMF/EDK2": {"status": "⚪ Pending", "check": lambda: os.path.exists("/usr/share/edk2/x64/OVMF_CODE.4m.fd") or os.path.exists("/usr/share/OVMF/OVMF_CODE.fd"), "arch": "edk2-ovmf", "debian": "ovmf"},
-        "Python Rich": {"status": "⚪ Pending", "check": lambda: importlib.util.find_spec("rich"), "arch": "python-rich", "debian": "python3-rich"},
-        "Zenity": {"status": "⚪ Pending", "check": lambda: shutil.which("zenity"), "arch": "zenity", "debian": "zenity"},
-        "Python Pexpect": {"status": "⚪ Pending", "check": lambda: importlib.util.find_spec("pexpect"), "arch": "python-pexpect", "debian": "python3-pexpect"},
-        "Python Questionary": {"status": "⚪ Pending", "check": lambda: importlib.util.find_spec("questionary"), "arch": "AUR", "debian": "python3-questionary"},
-        "ISO Info Tool": {"status": "⚪ Pending", "check": lambda: shutil.which("isoinfo"), "arch": "cdrkit", "debian": "genisoimage"},
-        "GuestFS Tools": {"status": "⚪ Pending", "check": lambda: shutil.which("guestmount"), "arch": "guestfs-tools", "debian": "guestfs-tools"}
+        "QEMU": {"status": "⚪ Pending", "check": lambda: shutil.which("qemu-system-x86_64"), "arch": "qemu-desktop", "debian": "qemu-system-x86", "fedora": "qemu-system-x86"},
+        "OVMF/EDK2": {"status": "⚪ Pending", "check": lambda: os.path.exists("/usr/share/edk2/x64/OVMF_CODE.4m.fd") or os.path.exists("/usr/share/OVMF/OVMF_CODE.fd"), "arch": "edk2-ovmf", "debian": "ovmf", "fedora": "edk2-ovmf"},
+        "Python Rich": {"status": "⚪ Pending", "check": lambda: importlib.util.find_spec("rich"), "arch": "python-rich", "debian": "python3-rich", "fedora": "python3-rich"},
+        "Zenity": {"status": "⚪ Pending", "check": lambda: shutil.which("zenity"), "arch": "zenity", "debian": "zenity", "fedora": "zenity"},
+        "Python Pexpect": {"status": "⚪ Pending", "check": lambda: importlib.util.find_spec("pexpect"), "arch": "python-pexpect", "debian": "python3-pexpect", "fedora": "python3-pexpect"},
+        "Python Questionary": {"status": "⚪ Pending", "check": lambda: importlib.util.find_spec("questionary"), "arch": "AUR:python-questionary", "debian": "python3-questionary", "fedora": "python3-questionary"},
+        "Python Requests": {"status": "⚪ Pending", "check": lambda: importlib.util.find_spec("requests"), "arch": "python-requests", "debian": "python3-requests", "fedora": "python3-requests"},
+        "Python TQDM": {"status": "⚪ Pending", "check": lambda: importlib.util.find_spec("tqdm"), "arch": "python-tqdm", "debian": "python3-tqdm", "fedora": "python3-tqdm"},
+        "ISO Info Tool": {"status": "⚪ Pending", "check": lambda: shutil.which("isoinfo"), "arch": "cdrkit", "debian": "genisoimage", "fedora": "genisoimage"},
+        "GuestFS Tools": {"status": "⚪ Pending", "check": lambda: shutil.which("guestmount"), "arch": "guestfs-tools", "debian": "guestfs-tools", "fedora": "libguestfs-tools-c"},
+        "APFS FUSE Driver": {"status": "⚪ Pending", "check": lambda: shutil.which("apfs-fuse"), "arch": "AUR:apfs-fuse-git", "debian": "apfs-fuse", "fedora": "apfs-fuse"},
+        "APFS Utilities": {"status": "⚪ Pending", "check": lambda: os.path.exists("/usr/bin/fsck.apfs"), "arch": "AUR:apfsprogs-git", "debian": "libfsapfs-utils", "fedora": "libfsapfs-utils"}
     }
 
     progress = Progress(
@@ -87,64 +159,113 @@ def initial_dependency_check():
 
     with Live(generate_ui(), console=console, screen=False, auto_refresh=False) as live:
         apt_updated = False
+        pacman_synced = False
         for task, details in tasks.items():
             live.update(generate_ui(), refresh=True)
             time.sleep(0.2)
 
             if details["check"]():
                 tasks[task]['status'] = "✅ Found"
-            else:
-                tasks[task]['status'] = "🟡 Installing..."
+                progress.update(progress_task, advance=1)
                 live.update(generate_ui(), refresh=True)
-                
-                install_cmd = []
-                if distro_id in ["arch", "manjaro"]:
-                    pkg_name = details.get("arch")
-                    if pkg_name == "AUR":
-                        if not shutil.which("yay"):
-                            tasks[task]['status'] = "🔴 Error: 'yay' not found."
-                            live.update(generate_ui(), refresh=True)
-                            time.sleep(4)
-                            sys.exit(1)
-                        install_cmd = ["yay", "-S", "--noconfirm", "python-questionary"]
-                    else:
-                        install_cmd = ["sudo", "pacman", "-S", "--noconfirm", pkg_name]
-                elif distro_id in ["debian", "ubuntu", "pop"]:
-                    pkg_name = details.get("debian")
-                    install_cmd = ["sudo", "apt", "install", "-y", pkg_name]
-                    if not apt_updated:
-                        action_message = "Updating package lists (e.g., apt update)..."
-                        live.update(generate_ui(), refresh=True)
-                        try:
-                            subprocess.run(["sudo", "apt", "update"], check=True, capture_output=True, text=True)
-                            apt_updated = True
-                            action_message = "Glint is verifying your system's dependencies."
-                        except subprocess.CalledProcessError:
-                            tasks[task]['status'] = "🔴 Error: 'apt update' failed."
-                            live.update(generate_ui(), refresh=True)
-                            time.sleep(4)
-                            sys.exit(1)
-                else:
-                    tasks[task]['status'] = f"🔴 Error: Unsupported distro '{distro_id}'."
-                    live.update(generate_ui(), refresh=True)
-                    time.sleep(4)
-                    sys.exit(1)
+                continue # Skip to the next task if already found
 
+            # --- Installation Logic Starts Here ---
+            tasks[task]['status'] = "🟡 Installing..."
+            live.update(generate_ui(), refresh=True)
+            
+            install_cmd = []
+            installation_succeeded = False
+
+            # --- Arch Linux Logic ---
+            if distro_id in ["arch", "manjaro", "endeavouros"]:
+                if not pacman_synced:
+                    action_message = "Synchronizing pacman databases..."
+                    live.update(generate_ui(), refresh=True)
+                    try:
+                        subprocess.run(["sudo", "pacman", "-Sy", "--noconfirm"], check=True, capture_output=True, text=True)
+                        pacman_synced = True
+                    except subprocess.CalledProcessError:
+                        tasks[task]['status'] = "🔴 Error: 'pacman -Sy' failed."
+                        live.update(generate_ui(), refresh=True)
+                        time.sleep(4)
+                        sys.exit(1)
+                
+                pkg_name = details.get("arch")
+                if pkg_name.startswith("AUR:"):
+                    aur_pkg_name = pkg_name.split(":", 1)[1]
+                    action_message = f"Installing {aur_pkg_name} from the AUR with yay..."
+                    live.update(generate_ui(), refresh=True)
+
+                    if not shutil.which("yay"):
+                        tasks[task]['status'] = "🔴 Error: 'yay' not found."
+                        live.update(generate_ui(), refresh=True)
+                        time.sleep(4)
+                        sys.exit(1)
+                    
+                    installation_succeeded = run_aur_install(aur_pkg_name, console, lambda: live.update(generate_ui(), refresh=True))
+                
+                else: # It's an official repository package
+                    action_message = f"Installing {pkg_name} with pacman..."
+                    live.update(generate_ui(), refresh=True)
+                    install_cmd = ["sudo", "pacman", "-S", "--noconfirm", pkg_name]
+                    try:
+                        subprocess.run(install_cmd, check=True, capture_output=True, text=True)
+                        installation_succeeded = True
+                    except (subprocess.CalledProcessError, FileNotFoundError):
+                        installation_succeeded = False
+
+            # --- Debian/Ubuntu Logic ---
+            elif distro_id in ["debian", "ubuntu", "pop"]:
+                pkg_name = details.get("debian")
+                if not apt_updated:
+                    action_message = "Updating package lists (e.g., apt update)..."
+                    live.update(generate_ui(), refresh=True)
+                    try:
+                        subprocess.run(["sudo", "apt", "update"], check=True, capture_output=True, text=True)
+                        apt_updated = True
+                    except subprocess.CalledProcessError:
+                        tasks[task]['status'] = "🔴 Error: 'apt update' failed."
+                        live.update(generate_ui(), refresh=True)
+                        time.sleep(4)
+                        sys.exit(1)
+                
+                action_message = f"Installing {pkg_name} with apt..."
+                live.update(generate_ui(), refresh=True)
+                install_cmd = ["sudo", "apt", "install", "-y", pkg_name]
                 try:
                     subprocess.run(install_cmd, check=True, capture_output=True, text=True)
+                    installation_succeeded = True
                 except (subprocess.CalledProcessError, FileNotFoundError):
-                    tasks[task]['status'] = f"🔴 Error: Failed to install {task}."
-                    live.update(generate_ui(), refresh=True)
-                    time.sleep(4)
-                    sys.exit(1)
+                    installation_succeeded = False
+            
+            # --- Fedora Logic ---
+            elif distro_id == "fedora":
+                pkg_name = details.get("fedora")
+                action_message = f"Installing {pkg_name} with dnf..."
+                live.update(generate_ui(), refresh=True)
+                install_cmd = ["sudo", "dnf", "install", "-y", pkg_name]
+                try:
+                    subprocess.run(install_cmd, check=True, capture_output=True, text=True)
+                    installation_succeeded = True
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    installation_succeeded = False
+            
+            else:
+                tasks[task]['status'] = f"🔴 Error: Unsupported distro '{distro_id}'."
+                live.update(generate_ui(), refresh=True)
+                time.sleep(4)
+                sys.exit(1)
 
-                if not details["check"]():
-                    tasks[task]['status'] = f"🔴 Error: Install OK, but check failed."
-                    live.update(generate_ui(), refresh=True)
-                    time.sleep(4)
-                    sys.exit(1)
-                
+            # --- Final check after installation attempt ---
+            action_message = "Glint is verifying your system's dependencies."
+            if installation_succeeded and details["check"]():
                 tasks[task]['status'] = "✅ Installed"
+            else:
+                tasks[task]['status'] = f"🔴 Error: Failed to install {task}."
+                live.update(generate_ui(), refresh=True)
+                time.sleep(4)
+                sys.exit(1)
 
             progress.update(progress_task, advance=1)
             live.update(generate_ui(), refresh=True)
@@ -152,6 +273,29 @@ def initial_dependency_check():
         progress.update(progress_task, description="All dependencies satisfied.")
         live.update(generate_ui(), refresh=True)
         time.sleep(1)
+
+
+def setup_directories():
+    """
+    Ensures that all necessary VM storage directories exist.
+    """
+    from config import CONFIG
+    from core_utils import print_info
+
+    print_info("Verifying storage directories...")
+    required_dirs = [
+        CONFIG['VMS_DIR_LINUX'],
+        CONFIG['VMS_DIR_MACOS'],
+        CONFIG['VMS_DIR_WINDOWS'],
+        # You could also add CONFIG['ASSETS_DIR'] here if needed
+    ]
+    for vm_dir in required_dirs:
+        try:
+            os.makedirs(vm_dir, exist_ok=True)
+        except OSError as e:
+            # This is a critical error, the program can't run without storage
+            print(f"FATAL: Could not create required directory {vm_dir}: {e}")
+            sys.exit(1)        
 
 # --- Main Execution Logic ---
 
@@ -240,7 +384,9 @@ def main_menu():
     import questionary
     from core_utils import clear_screen, print_info
     from linux_vm import linux_vm_menu
-    from macos_vm import macos_vm_menu
+    from linux_vm import linux_vm_menu, get_running_vm_info as get_linux_vm_status
+    from macos_vm import macos_vm_menu, get_running_vm_info as get_macos_vm_status
+    from windows_vm import windows_vm_menu, get_running_vm_info as get_windows_vm_status
     from windows_vm import windows_vm_menu
 
     console = Console()
@@ -265,7 +411,17 @@ def main_menu():
                 if not os.path.isdir(vm_dir):
                     continue
                 
-                is_running, pid = get_vm_status(vm_dir)
+                vm_status_func = None
+                if os_type == "🐧 Linux":
+                    vm_status_func = get_linux_vm_status
+                elif os_type == "🍎 macOS":
+                    vm_status_func = get_macos_vm_status
+                elif os_type == "🪟 Windows":
+                    vm_status_func = get_windows_vm_status
+
+                vm_info = vm_status_func(vm_name) # Pass vm_name, not vm_dir
+                is_running = vm_info is not None
+                pid = vm_info.get('pid') if is_running else 'N/A'
                 status = f"[green]● Running[/] [dim](PID: {pid})[/]" if is_running else "[red]● Stopped[/]"
                 
                 config_path = os.path.join(vm_dir, "config.json")
@@ -298,22 +454,7 @@ def main_menu():
             table.add_row(vm['status'], vm['name'], vm['os'], vm['cpu_mem'])
         return Panel(table, title="[bold purple]VM Dashboard[/]", border_style="purple", expand=True)
 
-    def get_vm_status(vm_dir):
-        """
-        Safely checks if a VM process is running by checking its PID file.
-        """
-        pid_file = os.path.join(vm_dir, "qemu.pid")
-        if not os.path.exists(pid_file):
-            return False, None
-        try:
-            with open(pid_file, 'r', encoding='utf-8') as f:
-                pid = int(f.read().strip())
-            os.kill(pid, 0)
-            return True, pid
-        except (IOError, ValueError, ProcessLookupError, OSError):
-            if os.path.exists(pid_file):
-                os.remove(pid_file)
-            return False, None
+    
 
     custom_style = questionary.Style([
         ('selected', 'fg:#673ab7 bold'),
@@ -361,6 +502,9 @@ if __name__ == "__main__":
     
     # Run the initial dependency check first
     initial_dependency_check()
+    
+    # Ensure all required directories exist before starting the menu
+    setup_directories()
     
     # Now that dependencies are met, start the main application
     main_menu()

@@ -14,6 +14,7 @@ import random
 import socket
 import shlex
 import re
+import time
 import questionary
 from rich.console import Console
 from rich.panel import Panel
@@ -48,7 +49,25 @@ def clear_screen():
     """Clears the console screen."""
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# --- Command Execution ---
+# --- Command Execution --
+
+      
+def get_host_screen_resolution():
+    """
+    Tries to get the primary monitor's screen resolution using tkinter.
+    Returns a string 'WIDTHxHEIGHT' or None if it fails.
+    """
+    try:
+        import tkinter
+        root = tkinter.Tk()
+        root.withdraw() # Hide the main window
+        width = root.winfo_screenwidth()
+        height = root.winfo_screenheight()
+        root.destroy()
+        return f"{width}x{height}"
+    except Exception:
+        # This can fail on systems without a running X server (headless)
+        return None
 
 def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
     """
@@ -106,6 +125,60 @@ def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
         print_error(f"An unexpected error occurred while running command: {e}")
         return None
 
+def run_guestfs_command(cmd_list, as_root=True, check=True, quiet=False):
+    """
+    Runs a libguestfs command. This assumes the system's libguestfs
+    is correctly configured to use the appliance backend for APFS.
+    """
+    if not quiet:
+        console.print(f"\n[blue]▶️  Executing GuestFS Command: {' '.join(shlex.quote(s) for s in cmd_list)}[/]")
+    
+    # We pass no special environment, relying on the system's default
+    # (which should be the appliance backend after a proper install).
+    return run_command_live(cmd_list, as_root=as_root, check=check, quiet=quiet)
+    
+
+def get_vm_status(vm_dir):
+    """
+    Safely checks if a VM process is running by checking its PID file
+    and retrieves session information like SSH port if available.
+    """
+    pid_file = os.path.join(vm_dir, "qemu.pid")
+    session_info_file = os.path.join(vm_dir, "session.info")
+
+    if not os.path.exists(pid_file):
+        return None, None
+
+    try:
+        with open(pid_file, 'r', encoding='utf-8') as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)  # Check if process exists
+
+        session_info = None
+        if os.path.exists(session_info_file):
+            with open(session_info_file, 'r', encoding='utf-8') as f:
+                # Attempt to read as simple port, fallback to key-value
+                content = f.read().strip()
+                if content.isdigit():
+                    session_info = {'port': int(content)}
+                else:
+                    # Simple key-value parser
+                    info = {}
+                    for line in content.splitlines():
+                        if '=' in line:
+                            key, value = line.split('=', 1)
+                            info[key.strip()] = value.strip()
+                    session_info = info
+
+        return pid, session_info
+    except (IOError, ValueError, ProcessLookupError, OSError):
+        # Cleanup stale files if process is not running
+        files_to_clean = [pid_file, session_info_file]
+        for f in files_to_clean:
+            if os.path.exists(f):
+                remove_file(f, quiet=True) # Assuming remove_file can be quiet
+        return None, None
+
 
 def _run_command(cmd, as_root=False):
     """
@@ -150,8 +223,8 @@ def _create_launcher_script(script_path, commands, as_root=False):
                 cmd_list.insert(0, "sudo")
                 
             quoted_cmd = ' '.join(shlex.quote(s) for s in cmd_list)
-            f.write(f"echo '▶️  {title}...'\\n"
-                    f"{final_cmd}{quoted_cmd}\\n\\n")
+            f.write(f"echo '▶️  {title}...\n")
+            f.write(f"{final_cmd}{quoted_cmd}\n\n")
             
     os.chmod(script_path, 0o755)
 
@@ -160,10 +233,17 @@ def get_terminal_command(shell_script_path):
     """
     Returns the full command list to launch a script in a new terminal.
     """
-    terminals = {'konsole': '-e', 'gnome-terminal': '--', 'xfce4-terminal': '-x', 'xterm': '-e'}
-    for term, arg in terminals.items():
+    terminals = {
+        'konsole': ['-e'],
+        'gnome-terminal': ['--'],
+        'xfce4-terminal': ['-x'],
+        'alacritty': ['-e'],
+        'kitty': ['--'],
+        'xterm': ['-e']
+    }
+    for term, args in terminals.items():
         if shutil.which(term):
-            return [term, arg, 'bash', shell_script_path]
+            return [term] + args + ['bash', shell_script_path]
     return None
 
 
@@ -251,12 +331,12 @@ def get_disk_size(prompt, default_size):
         print_warning("Invalid format. Please enter a number, optionally followed by G, GB, M, etc. (e.g., 80G, 512M).")
 
 
-def get_vm_config(defaults):
+def get_vm_config(defaults, header_text="Configure Virtual Machine"):
     """
     Prompts the user to configure the VM's memory and CPU cores.
     """
     config = {}
-    print_header("Configure Virtual Machine")
+    print_header(header_text)
     
     while True:
         mem_prompt = f"Enter Memory (e.g., 8G) [default: {defaults['VM_MEM']}]: "
@@ -310,7 +390,11 @@ def select_from_list(items, prompt, display_key=None):
 
     choices = []
     for item in items:
-        display_text = item.get(display_key) if display_key and isinstance(item, dict) else os.path.basename(item)
+        if isinstance(item, questionary.Separator):
+            choices.append(item)
+            continue
+            
+        display_text = item.get(display_key) if display_key and isinstance(item, dict) else os.path.basename(str(item))
         choices.append(questionary.Choice(title=display_text, value=item))
 
     try:
@@ -343,6 +427,57 @@ def select_from_list(items, prompt, display_key=None):
 
 # --- Network Utilities ---
 
+def manage_firewall_rule(port, action='add'):
+    """
+    Intelligently adds or removes a firewall rule for a given port, supporting ufw and firewalld.
+    Returns True on success or if no action is needed, False on failure.
+    """
+    fw_manager = None
+    if shutil.which("ufw"):
+        fw_manager = "ufw"
+    elif shutil.which("firewall-cmd"):
+        fw_manager = "firewalld"
+    else:
+        return True # No supported firewall, so we can't fail.
+
+    # --- Intelligent State Check ---
+    is_active = False
+    if fw_manager == "ufw":
+        status_output = run_command_live(['ufw', 'status'], as_root=True, check=False, quiet=True)
+        if status_output and "active" in status_output.lower():
+            is_active = True
+    elif fw_manager == "firewalld":
+        status_output = run_command_live(['firewall-cmd', '--state'], as_root=True, check=False, quiet=True)
+        if status_output and "running" in status_output.lower():
+            is_active = True
+
+    if not is_active:
+        print_success(f"Firewall ({fw_manager}) is not active. No rule needed.")
+        return True # Success, because no rule is required.
+
+    action_text = "Opening" if action == 'add' else "Closing"
+    print_info(f"{action_text} port {port} on the host firewall ({fw_manager})...")
+
+    cmd = []
+    if fw_manager == "ufw":
+        if action == 'add':
+            cmd = ['ufw', 'allow', str(port), '/tcp', 'comment', 'Glint-VNC-Rule']
+        else: # 'remove'
+            cmd = ['ufw', 'delete', 'allow', str(port), '/tcp']
+    elif fw_manager == "firewalld":
+        if action == 'add':
+            cmd = ['firewall-cmd', f'--add-port={port}/tcp']
+        else: # 'remove'
+            cmd = ['firewall-cmd', f'--remove-port={port}/tcp']
+
+    # Use check=True to ensure we fail if the command doesn't work.
+    if run_command_live(cmd, as_root=True, check=True):
+        print_success(f"Port {port} has been successfully {'opened' if action == 'add' else 'closed'}.")
+        return True
+    else:
+        print_error(f"Failed to {'open' if action == 'add' else 'close'} port {port}. Please check permissions.")
+        return False
+    
 def find_host_dns():
     """
     Finds the best DNS server from the host's resolv.conf.
@@ -367,6 +502,36 @@ def find_unused_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('', 0))
         return s.getsockname()[1]
+    
+def get_host_ips():
+    """
+    Finds all non-local IPv4 addresses for the host machine.
+    """
+    ips = []
+    try:
+        # Using `ip addr` is the most reliable method on modern Linux
+        result = subprocess.run(['ip', '-4', 'addr'], capture_output=True, text=True, check=True)
+        for line in result.stdout.splitlines():
+            if 'inet' in line and 'global' in line:
+                # Example: "    inet 192.168.1.50/24 brd 192.168.1.255 scope global dynamic noprefixroute wlan0"
+                ip = line.strip().split()[1].split('/')[0]
+                ips.append(ip)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        # Fallback for systems without `ip` or if it fails
+        try:
+            hostname = socket.gethostname()
+            # This can sometimes return 127.0.0.1, so it's a fallback
+            ip = socket.gethostbyname(hostname)
+            if not ip.startswith("127."):
+                ips.append(ip)
+        except socket.gaierror:
+            pass # Could not resolve hostname
+    
+    if not ips:
+        # If all else fails, inform the user
+        return ["<COULD_NOT_DETECT_IP>"]
+        
+    return ips    
 
 
 def setup_bridge_network():
@@ -423,21 +588,48 @@ def find_first_existing_path(path_list):
 def identify_iso_type(iso_path):
     """
     Identifies the type of OS in an ISO file by checking for characteristic files.
-    Returns 'windows', 'linux', 'macos', 'virtio', or 'unknown'.
+    Uses guestfish as a robust fallback for complex ISOs like UDF.
     """
     if not os.path.exists(iso_path) or not iso_path.lower().endswith('.iso'):
         return 'unknown'
 
+    files_in_iso = set()
     try:
+        # First, try isoinfo, which is fast and common
         result = subprocess.run(
             ["isoinfo", "-f", "-i", iso_path],
             capture_output=True, text=True, check=True,
             encoding='utf-8', errors='ignore'
         )
         files_in_iso = {path.strip().lower().lstrip('/') for path in result.stdout.splitlines()}
+        
+        # If isoinfo returns a tiny file list, it's likely an image it can't read.
+        # Fallback to guestfish, which is more powerful.
+        if len(files_in_iso) < 10 and shutil.which("guestfish"):
+            print_info(f"ISO '{os.path.basename(iso_path)}' requires deep inspection. Using guestfish...")
+            # This more complex command sequence can handle non-standard bootable ISOs
+            # that don't have a standard partition table.
+            try:
+                guestfish_cmd = ["guestfish", "--ro", "-a", iso_path]
+                commands = "run\nmount /dev/sda /\nfind /\n"
+                result = subprocess.run(
+                    guestfish_cmd,
+                    input=commands,
+                    capture_output=True, text=True, check=True,
+                    encoding='utf-8', errors='ignore'
+                )
+                files_in_iso = {path.strip().lower().lstrip('/') for path in result.stdout.splitlines()}
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                # This can happen if the ISO is truly unreadable.
+                pass # We'll just use the (likely empty) files_in_iso set from isoinfo
 
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # If all methods fail, we can't know the type.
+        return 'unknown'
+
+    # --- OS Identification Logic ---
+    try:
         # macOS check (high priority)
-        # Look for the app bundle or the BaseSystem.dmg within an 'Install' directory
         if any(f.startswith('install macos') and f.endswith('.app/contents/sharedsupport/basesystem.dmg') for f in files_in_iso) or \
            any('install macos' in f and 'basesystem.dmg' in f for f in files_in_iso) or \
            'applications/install macos' in ''.join(files_in_iso):
@@ -448,7 +640,11 @@ def identify_iso_type(iso_path):
             return 'virtio'
 
         # Windows check
-        if 'sources/boot.wim' in files_in_iso or 'boot/boot.sdi' in files_in_iso:
+        has_boot_wim = 'sources/boot.wim' in files_in_iso
+        has_boot_sdi = 'boot/boot.sdi' in files_in_iso
+        has_setup_exe = any(f.endswith('/setup.exe') or f == 'setup.exe' for f in files_in_iso)
+
+        if has_boot_wim or has_boot_sdi or has_setup_exe:
             return 'windows'
             
         # Linux check
@@ -460,53 +656,76 @@ def identify_iso_type(iso_path):
         
     return 'unknown'
 
+
 def get_host_gpus():
     """
-    Scans and identifies host GPUs using lspci.
-    Returns a list of dictionaries, each representing a GPU.
+    Scans and identifies host GPUs using lspci and their PCI class codes for reliability.
+    Returns a list of dictionaries, each representing a GPU component.
     """
     gpus = []
     try:
-        # Execute lspci and capture output
+        # Use lspci with the '-D' flag to show domain numbers (for full addresses)
+        # and '-n' to get numeric class codes.
         lspci_output = subprocess.check_output(
-            ["lspci", "-nn"],
+            ["lspci", "-Dn"],
             text=True,
             stderr=subprocess.PIPE
         ).strip()
 
-        # Regex to find VGA compatible controllers and 3D controllers
+        # The PCI class code for anything display-related starts with "03".
+        # 0300: VGA-compatible controller
+        # 0301: XGA controller
+        # 0302: 3D controller
+        # 0380: Other display controller
+        # This regex is now much simpler and more reliable.
+        # It captures the full PCI address, the class code, and the vendor/device ID.
         gpu_pattern = re.compile(
-            r"^([0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.\d)\s"  # PCI Address (e.g., 01:00.0)
-            r"(VGA compatible controller|3D controller)\s"          # Device Type
-            r":\s(.+)\s"                              # Description (e.g., NVIDIA Corporation...)
-            r"\[([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\]"     # Vendor:Device ID (e.g., [10de:1f08])
-            r"(?:\s\(rev\s([a-zA-Z0-9]{2})\))?",       # Revision (optional)
+            r"^([0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.\d)\s"  # Full PCI Address (e.g., 0000:01:00.0)
+            r"03[0-9a-fA-F]{2}:\s"                                  # Class Code (must start with 03)
+            r"([0-9a-fA-F]{4}:[0-9a-fA-F]{4})",                     # Vendor:Device ID
             re.MULTILINE
         )
 
         for match in gpu_pattern.finditer(lspci_output):
-            pci_address, _, description, vendor_device, _ = match.groups()
+            pci_address, vendor_device = match.groups()
             
-            # Determine if it's an iGPU (typically Intel) or dGPU
+            # Now, get the human-readable description for this specific address
+            try:
+                description_output = subprocess.check_output(
+                    ["lspci", "-s", pci_address, "-v"],
+                    text=True,
+                    stderr=subprocess.PIPE
+                ).strip()
+                # A simple regex to grab the main description line
+                description_match = re.search(r":\s(.*?)(?:\s\(rev.*\))?$", description_output.splitlines()[0])
+                description = description_match.group(1).strip() if description_match else "Unknown GPU"
+            except (subprocess.CalledProcessError, IndexError):
+                description = "Unknown GPU"
+
+            # Shorten the PCI address for display if it starts with 0000:
+            display_pci_address = pci_address.replace("0000:", "")
+
             gpu_type = "iGPU" if "intel" in description.lower() else "dGPU"
 
             gpus.append({
-                "pci_address": pci_address,
-                "description": description.strip(),
+                "pci_address": display_pci_address,
+                "description": description,
                 "vendor_device": vendor_device,
                 "type": gpu_type,
-                "display_name": f"{gpu_type} - {description.strip()} ({pci_address})"
+                "display_name": f"{gpu_type} - {description} ({display_pci_address})"
             })
         
         if not gpus:
-            print_warning("No GPUs found via lspci. Passthrough may not be possible.")
+            print_warning("No devices with display controller class '03xx' found by lspci.")
+            print_info("This might mean your user doesn't have permission, or pciutils is not installed correctly.")
 
     except FileNotFoundError:
-        print_error("`lspci` command not found. Please install pciutils.")
+        print_error("`lspci` command not found. Please install the 'pciutils' package.")
     except subprocess.CalledProcessError as e:
         print_error(f"Failed to run lspci: {e.stderr}")
     
     return gpus
+
 
 
 def detect_distro():
@@ -522,7 +741,83 @@ def detect_distro():
         return None
     return None
 
+def get_cpu_vendor():
+    """
+    Identifies the CPU vendor (Intel/AMD) from /proc/cpuinfo.
+    """
+    try:
+        with open('/proc/cpuinfo', 'r', encoding='utf-8') as f:
+            cpu_info = f.read()
+        if "GenuineIntel" in cpu_info:
+            return "Intel"
+        if "AuthenticAMD" in cpu_info:
+            return "AMD"
+    except IOError:
+        return "Unknown"
+    return "Unknown"
+
+      
+      
+def is_apfs_support_enabled():
+    if not shutil.which("guestfish"): return False
+    try:
+        # A simple, quick check.
+        result = subprocess.run(['sudo', 'guestfish', '-a', '/dev/null', '-i', 'available-filesystems'], capture_output=True, text=Ture, check=True, timeout=60)
+        return 'apfs' in result.stdout
+    except Exception:
+        return False
+
+    
+    
+
 # --- Passthrough Safety Checks ---
+
+def is_monitor_connected(pci_address):
+    """
+    Checks if a monitor is connected to any output of a given GPU.
+    Returns True if a connected monitor is found, False otherwise.
+    """
+    drm_path = "/sys/class/drm/"
+    full_pci_address = f"0000:{pci_address}"
+
+    try:
+        # Find the cardX directory that corresponds to the PCI device
+        for card_dir in os.listdir(drm_path):
+            if not card_dir.startswith("card"):
+                continue
+            
+            device_link = os.path.join(drm_path, card_dir, "device")
+            if os.path.islink(device_link):
+                # The target is a relative path to the devices directory
+                target_pci_path = os.path.realpath(device_link)
+                if full_pci_address in target_pci_path:
+                    # We found the right card. Now check its connectors.
+                    for conn_dir in os.listdir(os.path.join(drm_path, card_dir)):
+                        if conn_dir.startswith(card_dir + "-"):
+                            status_path = os.path.join(drm_path, card_dir, conn_dir, "status")
+                            if os.path.exists(status_path):
+                                with open(status_path, 'r', encoding='utf-8') as f:
+                                    if f.read().strip() == "connected":
+                                        return True # Found a connected monitor
+                    # If we checked all connectors for this card and found none
+                    return False
+    except (FileNotFoundError, PermissionError):
+        # If we can't check, assume it might be connected to be safe.
+        print_warning("Could not reliably check monitor connection status.")
+        return True
+        
+    # If we loop through all cards and don't find the PCI address
+    return False
+
+def is_iommu_active():
+    """
+    Checks if IOMMU is active by looking for populated IOMMU group directories.
+    """
+    iommu_path = "/sys/kernel/iommu_groups/"
+    if not os.path.isdir(iommu_path):
+        return False
+    # If the directory exists and contains any entries, IOMMU is active.
+    return any(os.scandir(iommu_path))
 
 def is_vfio_module_loaded():
     """Checks if the vfio-pci kernel module is loaded."""
@@ -546,7 +841,7 @@ def get_active_gpu_pci_address():
             stderr=subprocess.PIPE
         ).strip()
         
-        boot_vga_pattern = re.compile(r"^([0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.\d)\sVGA compatible controller.*\[boot\]", re.MULTILINE)
+        boot_vga_pattern = re.compile(r"^([0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.\d)\sVGA compatible controller.*\s\[boot\]", re.MULTILINE)
         match = boot_vga_pattern.search(lspci_output)
         
         if match:
@@ -571,12 +866,14 @@ def get_active_gpu_pci_address():
 def get_iommu_group_devices(pci_address):
     """
     Finds all devices in the same IOMMU group as the given PCI device.
-    Returns a list of device descriptions.
+    Returns a list of PCI addresses for all other devices in the group.
     """
-    iommu_devices = []
+    other_devices = []
     try:
-        # Construct the path to the IOMMU group for the given device
-        device_path = f"/sys/bus/pci/devices/0000:{pci_address}"
+        # We need the full 0000:xx:xx.x address for sysfs
+        full_pci_address = f"0000:{pci_address}"
+
+        device_path = f"/sys/bus/pci/devices/{full_pci_address}"
         if not os.path.exists(device_path):
             return [] # Device not found
 
@@ -585,22 +882,70 @@ def get_iommu_group_devices(pci_address):
         if not os.path.isdir(iommu_group_path):
             return []
 
-        # Get lspci output to map PCI addresses to names
-        lspci_output = subprocess.check_output(["lspci"], text=True).strip()
-        
         for device_link in os.listdir(iommu_group_path):
-            # device_link is like '0000:01:00.0'
-            # We need to match this with the lspci output
-            device_pci_addr = device_link.split(":")[-1] # e.g., 01:00.0
+            # device_link is the full address, e.g., '0000:01:00.1'
+            # We want the short version for QEMU, e.g., '01:00.1'
+            short_addr = device_link.replace("0000:", "")
             
-            for line in lspci_output.splitlines():
-                if line.startswith(device_pci_addr):
-                    # Don't add the original GPU to the list of "other" devices
-                    if device_pci_addr != pci_address:
-                        iommu_devices.append(line)
-                    break
+            # Don't add the original GPU to the list of "other" devices
+            if short_addr != pci_address:
+                other_devices.append(short_addr)
                     
-    except (FileNotFoundError, subprocess.CalledProcessError, NotADirectoryError):
+    except (FileNotFoundError, NotADirectoryError):
         return []
         
-    return iommu_devices
+    return other_devices
+
+
+def get_pci_device_driver(pci_address):
+    """
+    Checks the current kernel driver in use for a given PCI device.
+    Returns the driver name as a string (e.g., 'i915', 'vfio-pci') or None.
+    """
+    # Note: We use 0000: prefix for sysfs path but not for display.
+    driver_path = f"/sys/bus/pci/devices/0000:{pci_address}/driver"
+    try:
+        if os.path.islink(driver_path):
+            # The driver is a symlink, its name is the basename of the target
+            return os.path.basename(os.readlink(driver_path))
+    except (FileNotFoundError, OSError):
+        # No driver directory or link means no driver is bound
+        return None
+    return None
+
+
+def bind_pci_device_to_driver(pci_address, driver):
+    """
+    Binds a PCI device to a specified driver using the sysfs interface.
+    This requires sudo privileges. Returns True on success, False on failure.
+    """
+    print_info(f"Attempting to bind device {pci_address} to driver '{driver}'...")
+
+    # First, unbind from any current driver
+    unbind_path = f"/sys/bus/pci/devices/0000:{pci_address}/driver/unbind"
+    if os.path.exists(unbind_path):
+        # We run this quietly and with check=False, as it's okay if it fails
+        # (e.g., if no driver was bound to begin with).
+        cmd_unbind = ['sh', '-c', f'echo "0000:{pci_address}" > {unbind_path}']
+        run_command_live(cmd_unbind, as_root=True, check=False, quiet=True)
+
+    # Second, bind to the new driver
+    bind_path = f"/sys/bus/pci/drivers/{driver}/bind"
+    if not os.path.exists(bind_path):
+        print_error(f"Driver '{driver}' does not have a 'bind' interface. Is it loaded?")
+        return False
+
+    cmd_bind = ['sh', '-c', f'echo "0000:{pci_address}" > {bind_path}']
+    if run_command_live(cmd_bind, as_root=True, check=True, quiet=True) is not None:
+        # Give sysfs a moment to update itself before we check the result
+        time.sleep(1)
+        new_driver = get_pci_device_driver(pci_address)
+        if new_driver == driver:
+            print_success(f"Successfully bound {pci_address} to {driver}.")
+            return True
+        else:
+            print_error(f"Command succeeded, but device is now bound to '{new_driver}' instead of '{driver}'.")
+            return False
+    else:
+        print_error(f"Failed to execute bind command for {pci_address} to {driver}.")
+        return False

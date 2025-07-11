@@ -57,13 +57,23 @@ def transfer_files_menu(vm_name, vm_type, vm_dir):
     """
     print_header(f"File Transfer for '{vm_name}' ({vm_type.capitalize()})")
 
-    ssh_port = _get_vm_ssh_port(vm_dir)
-    if not ssh_port:
+    vm_info = None
+    if vm_type == "linux":
+        from linux_vm import get_running_vm_info
+        vm_info = get_running_vm_info(vm_name)
+    elif vm_type == "macos":
+        from macos_vm import get_running_vm_info
+        vm_info = get_running_vm_info(vm_name)
+    elif vm_type == "windows":
+        from windows_vm import get_running_vm_info
+        vm_info = get_running_vm_info(vm_name)
+
+    if not vm_info or not vm_info.get('port'):
         print_error("Could not determine the SSH port for the running VM.")
         print_info("Please ensure the VM was started with Glint and is currently running.")
         return
 
-    vm_ip = _get_vm_ip(vm_type)
+    ssh_port = vm_info['port']
     
     print_info(f"This utility uses SFTP (SSH File Transfer Protocol) via port {ssh_port}.")
     _install_ssh_server_instructions(vm_type)

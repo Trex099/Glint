@@ -56,6 +56,40 @@ def find_input_devices():
         print_error("/dev/input/by-id not found. Cannot find input devices.")
         return None
 
+def _check_vfio_permissions():
+    """
+    Checks if the user has permissions for /dev/vfio/vfio and provides instructions if not.
+    """
+    vfio_path = "/dev/vfio/vfio"
+    if os.path.exists(vfio_path) and os.access(vfio_path, os.R_OK | os.W_OK):
+        return True
+
+    print_warning("VFIO permissions check failed.")
+    print_info("To run QEMU for passthrough without root, your user needs read/write access to /dev/vfio/vfio.")
+    
+    instructions = """
+  [bold]To set this up permanently, you need to create a udev rule.[/]
+  1. Create a new udev rule file:
+     [bold]sudo nano /etc/udev/rules.d/10-vfio.rules[/]
+  2. Add the following line to the file:
+     [bold]KERNEL=="vfio/vfio", GROUP="kvm", MODE="0660"[/]
+     (Assuming your user is in the 'kvm' group. Use 'ls -l /dev/kvm' to check.)
+  3. Add your user to the 'kvm' group if they aren't already:
+     [bold]sudo usermod -aG kvm $USER[/]
+  4. Apply the new rule and reboot:
+     [bold]sudo udevadm control --reload-rules && sudo udevadm trigger[/]
+     [bold]sudo reboot[/]
+    """
+    console.print(instructions)
+    
+    if questionary.confirm("Would you like to attempt to set permissions for the current session only? (Requires sudo)").ask():
+        if run_command_live(["setfacl", "-m", f"u:{os.getlogin()}:rw", vfio_path], as_root=True):
+            print_success("Temporary permissions set. This will reset on reboot.")
+            return True
+            
+    return False
+
+
 def _get_pci_device_driver(pci_id):
     """Gets the current driver for a PCI device."""
     try:
@@ -656,18 +690,33 @@ def _check_system_type():
         print_warning("Could not determine chassis type.")
         return False
 
-def _fix_grub_cmdline(param_to_add):
+def _provide_bootloader_instructions(param_to_add):
     """
-    Advises the user on how to manually add a kernel parameter to GRUB,
-    instead of modifying the file directly.
+    Advises the user on how to manually add a kernel parameter to their bootloader.
     """
-    grub_file = "/etc/default/grub"
     distro = detect_distro()
+    
+    # Instructions for GRUB
+    grub_file = "/etc/default/grub"
     update_cmd = DISTRO_INFO.get(distro, {}).get("grub_update", "sudo update-grub")
-
-    print_warning("ACTION REQUIRED: Manual GRUB update needed.")
+    
+    # Instructions for systemd-boot (used by Pop!_OS and others)
+    esp_path = "/boot/efi"
+    if distro == "pop":
+        esp_path = "/boot/efi" # Pop!_OS specific path
+    
+    print_warning("ACTION REQUIRED: Manual kernel parameter update needed.")
     print_info(f"To enable IOMMU, you need to add '{param_to_add}' to your kernel boot parameters.")
-    console.print(f"""
+    
+    # Create a choice for the user
+    bootloader_choice = questionary.select(
+        "Which bootloader are you using?",
+        choices=["GRUB (most systems)", "systemd-boot (Pop!_OS, etc.)", "Other/Unsure"]
+    ).ask()
+
+    if bootloader_choice == "GRUB (most systems)":
+        console.print(f"""
+  [bold]GRUB Instructions:[/bold]
   1. Open the GRUB configuration file:
      [bold]sudo nano {grub_file}[/]
   2. Find the line starting with [cyan]GRUB_CMDLINE_LINUX_DEFAULT[/].
@@ -678,7 +727,25 @@ def _fix_grub_cmdline(param_to_add):
      [bold]{update_cmd}[/]
   6. Reboot your system for the changes to take effect:
      [bold]sudo reboot[/]
-    """)
+        """)
+    elif bootloader_choice == "systemd-boot (Pop!_OS, etc.)":
+        console.print(f"""
+  [bold]systemd-boot Instructions:[/bold]
+  1. Find your EFI System Partition (ESP). It's usually mounted at [cyan]{esp_path}[/].
+  2. Edit the boot entry configuration file. For Pop!_OS, this is often at:
+     [bold]sudo nano {esp_path}/loader/entries/Pop_OS-current.conf[/]
+     For other systems, you may need to find the correct `.conf` file in `{esp_path}/loader/entries/`.
+  3. Find the line starting with [cyan]options[/].
+  4. Add [bold]{param_to_add}[/] to the end of that line.
+  5. Save the file and exit the editor.
+  6. Reboot your system for the changes to take effect:
+     [bold]sudo reboot[/]
+  
+  [dim]Note: Unlike GRUB, systemd-boot does not require a separate update command.[/dim]
+        """)
+    else:
+        print_info("Please consult your distribution's documentation on how to add kernel parameters.")
+        print_info(f"The parameter you need to add is: [bold]{param_to_add}[/]")
 
 
 def _check_iommu_support():
@@ -708,8 +775,8 @@ def _check_iommu_support():
     print_info("This is usually because it's disabled in the BIOS/UEFI or the required kernel parameter is missing.")
 
     param = "intel_iommu=on" if vendor == "Intel" else "amd_iommu=on"
-    if questionary.confirm(f"Would you like instructions on how to add the '{param}' kernel parameter to GRUB?").ask():
-        _fix_grub_cmdline(param)
+    if questionary.confirm(f"Would you like instructions on how to add the '{param}' kernel parameter to your bootloader?").ask():
+        _provide_bootloader_instructions(param)
     
     return False
 
@@ -819,7 +886,7 @@ def _execute_passthrough_lifecycle(vm_name, passthrough_info, vm_settings, input
         if qemu_cmd is None:
             raise RuntimeError("Failed to construct QEMU command.")
             
-        run_command_live(qemu_cmd, as_root=True)
+        run_command_live(qemu_cmd, as_root=False)
 
     except Exception as e:
         print_error(f"An error occurred during passthrough lifecycle: {e}")
@@ -828,19 +895,25 @@ def _execute_passthrough_lifecycle(vm_name, passthrough_info, vm_settings, input
         # --- POST-LAUNCH: Restore Host ---
         print_header("Restoring Host State")
         for pci_id in passthrough_info['pci_ids']:
-            # Only try to rebind if it was successfully bound to vfio-pci
-            if pci_id in bound_to_vfio:
-                print_info(f"Unbinding {pci_id} from vfio-pci...")
-                run_command_live(["bash", "-c", f"echo {pci_id} > /sys/bus/pci/drivers/vfio-pci/unbind"], as_root=True, quiet=True, check=False)
+            try:
+                # Only try to rebind if it was successfully bound to vfio-pci
+                if pci_id in bound_to_vfio:
+                    print_info(f"Unbinding {pci_id} from vfio-pci...")
+                    run_command_live(["bash", "-c", f"echo {pci_id} > /sys/bus/pci/drivers/vfio-pci/unbind"], as_root=True, quiet=True, check=False)
 
-            original_driver = original_drivers.get(pci_id)
-            if original_driver:
-                print_info(f"Rebinding {pci_id} to its original driver '{original_driver}'...")
-                run_command_live(["bash", "-c", f"echo {pci_id} > /sys/bus/pci/drivers/{original_driver}/bind"], as_root=True, quiet=True, check=False)
+                original_driver = original_drivers.get(pci_id)
+                if original_driver:
+                    print_info(f"Rebinding {pci_id} to its original driver '{original_driver}'...")
+                    run_command_live(["bash", "-c", f"echo {pci_id} > /sys/bus/pci/drivers/{original_driver}/bind"], as_root=True, quiet=True, check=False)
+            except Exception as e:
+                print_error(f"Failed to restore driver for {pci_id}: {e}")
         
         if dm_service:
-            print_info(f"Restarting display manager ({dm_service})...")
-            run_command_live(["systemctl", "start", dm_service], as_root=True)
+            try:
+                print_info(f"Restarting display manager ({dm_service})...")
+                run_command_live(["systemctl", "start", dm_service], as_root=True)
+            except Exception as e:
+                print_error(f"Failed to restart display manager: {e}")
             
         print_success("Host state restoration complete.")
 
@@ -852,8 +925,8 @@ def run_vm_with_live_passthrough():
     clear_screen()
     print_header("Run VM with Live Passthrough")
 
-    if not _check_and_load_vfio_module():
-        print_error("Launch aborted. Please resolve VFIO module issues and try again.")
+    if not _check_and_load_vfio_module() or not _check_vfio_permissions():
+        print_error("Launch aborted. Please resolve VFIO module and permission issues and try again.")
         return
 
     vm_name = select_vm("run with Live Passthrough")

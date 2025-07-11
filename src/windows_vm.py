@@ -11,6 +11,7 @@ import sys
 import re
 import uuid
 import json
+import random # Moved import to the top
 import questionary
 from rich.console import Console
 
@@ -22,10 +23,59 @@ from core_utils import (
     print_header, print_info, print_warning, print_error, clear_screen,
     run_command_live, launch_in_new_terminal_and_wait, select_from_list,
     remove_dir, print_success, get_vm_config, identify_iso_type, find_first_existing_path,
-    get_disk_size, find_unused_port
+    get_disk_size, find_unused_port, download_file, remove_file
 )
 
 console = Console()
+
+
+def _ensure_virtio_drivers():
+    """
+    Checks for local VirtIO drivers, and if not found, offers to download them.
+    Returns the path to the VirtIO ISO or an empty string. Returns None on cancellation.
+    """
+    print_header("Checking for VirtIO Drivers")
+    try:
+        all_isos = [f for f in os.listdir('.') if f.endswith('.iso')]
+        virtio_isos = [os.path.abspath(iso) for iso in all_isos if identify_iso_type(iso) == 'virtio']
+
+        options = []
+        if virtio_isos:
+            print_info("Found local VirtIO driver ISO(s).")
+            options.extend(virtio_isos)
+            options.append(questionary.Separator())
+
+        download_option = "Download latest stable VirtIO drivers from Fedora"
+        options.append(download_option)
+        options.append("Continue without VirtIO drivers (Not Recommended)")
+        options.append("Cancel")
+
+        choice = select_from_list(options, "Select a VirtIO driver source:")
+
+        if choice is None or choice == "Cancel":
+            return None # Abort creation
+
+        if choice == "Continue without VirtIO drivers (Not Recommended)":
+            print_warning("Proceeding without VirtIO drivers. Performance will be degraded.")
+            return ""
+
+        if choice == download_option:
+            url = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
+            destination = "virtio-win.iso"
+            print_info(f"Downloading from: {url}")
+            if download_file(url, destination):
+                return os.path.abspath(destination)
+            else:
+                print_error("Download failed. Please try again or download it manually.")
+                return None # Abort creation
+
+        # A local ISO was selected
+        print_success(f"Using selected VirtIO drivers: {os.path.basename(choice)}")
+        return choice
+
+    except OSError as e:
+        print_error(f"Error while searching for VirtIO drivers: {e}")
+        return None
 
 
 def get_vm_paths(vm_name):
@@ -40,7 +90,103 @@ def get_vm_paths(vm_name):
         "uefi_vars": os.path.join(vm_dir, "uefi_vars.fd"),
         "config": os.path.join(vm_dir, "config.json"),
         "pid_file": os.path.join(vm_dir, "qemu.pid"),
+        "session_info": os.path.join(vm_dir, "session.info"),
     }
+
+
+def get_running_vm_info(vm_name):
+    """
+    Safely retrieves information about a running VM.
+    """
+    paths = get_vm_paths(vm_name)
+    pid_file, session_info_file = paths['pid_file'], paths.get('session_info')
+
+    if not pid_file or not os.path.exists(pid_file):
+        return None
+
+    try:
+        with open(pid_file, 'r', encoding='utf-8') as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)  # Check if process exists
+
+        ssh_port = None
+        if session_info_file and os.path.exists(session_info_file):
+            with open(session_info_file, 'r', encoding='utf-8') as f:
+                ssh_port = int(f.read().strip())
+
+        return {'pid': pid, 'port': ssh_port}
+    except (IOError, ValueError, ProcessLookupError, OSError):
+        # Cleanup stale files if process is not running
+        files_to_clean = [pid_file]
+        if session_info_file:
+            files_to_clean.append(session_info_file)
+        for f_path in files_to_clean:
+            if os.path.exists(f_path):
+                remove_file(f_path)
+        return None
+
+
+def is_vm_running(vm_name):
+    """Checks if a VM is running."""
+    return get_running_vm_info(vm_name) is not None
+
+
+def select_vm(action_text, running_only=False):
+    """
+    Prompts the user to select a VM from the list of available Windows VMs.
+    """
+    print_header(f"Select VM to {action_text}")
+    vms_dir = CONFIG['VMS_DIR_WINDOWS']
+    if not os.path.isdir(vms_dir) or not os.listdir(vms_dir):
+        print_error("No Windows VMs found.")
+        return None
+
+    vm_list = sorted([d for d in os.listdir(vms_dir) if os.path.isdir(os.path.join(vms_dir, d))])
+
+    if running_only:
+        vm_list = [vm for vm in vm_list if is_vm_running(vm)]
+        if not vm_list:
+            print_error("No running VMs found.")
+            return None
+
+    if not vm_list:
+        print_error("No Windows VMs found.")
+        return None
+
+    return select_from_list(vm_list, "Choose a VM")
+
+
+def stop_vm(vm_name=None, force=False):
+    """Stops a running VM gracefully."""
+    if not vm_name:
+        clear_screen()
+        vm_name = select_vm("Stop", running_only=True)
+    if not vm_name:
+        return
+
+    vm_info = get_running_vm_info(vm_name)
+    if vm_info:
+        print_info(f"Stopping VM '{vm_name}' (PID: {vm_info['pid']})...")
+        try:
+            os.kill(vm_info['pid'], 15)  # SIGTERM
+            print_success(f"Stop signal sent to VM '{vm_name}'.")
+        except ProcessLookupError:
+            print_warning("Process already stopped.")
+        except OSError as e:
+            print_error(f"Failed to send stop signal to VM: {e}")
+
+        # Clean up PID files regardless of signal success
+        import time
+        time.sleep(1)
+        paths = get_vm_paths(vm_name)
+        files_to_clean = [paths['pid_file']]
+        if 'session_info' in paths and paths['session_info']:
+            files_to_clean.append(paths['session_info'])
+        for f_path in files_to_clean:
+            if os.path.exists(f_path):
+                remove_file(f_path)
+    elif not force:
+        print_error(f"Could not get running info for '{vm_name}'. It may not be running.")
 
 
 def find_iso_path(prompt_text="Select Windows Installation ISO"):
@@ -51,22 +197,22 @@ def find_iso_path(prompt_text="Select Windows Installation ISO"):
     try:
         all_isos = [f for f in os.listdir('.') if f.endswith('.iso')]
         windows_isos = [iso for iso in all_isos if identify_iso_type(iso) == 'windows']
-        
+
         if not windows_isos:
             print_error("No Windows installation ISO found in the current directory.")
             print_info("Please ensure a Windows installation .iso file is present.")
             return None
-            
+
         if len(windows_isos) > 1:
             iso_path = select_from_list(windows_isos, "Choose a Windows ISO")
         else:
             iso_path = windows_isos[0]
-            
+
         if iso_path:
             iso_abs_path = os.path.abspath(iso_path)
             print_info(f"Using ISO: {iso_abs_path}")
             return iso_abs_path
-            
+
     except OSError as e:
         print_error(f"Error reading current directory: {e}")
     return None
@@ -96,10 +242,21 @@ def find_virtio_iso_path():
             iso_abs_path = os.path.abspath(iso_path)
             print_info(f"Using VirtIO drivers: {iso_abs_path}")
             return iso_abs_path
-            
+
     except OSError as e:
         print_error(f"Error reading directory for VirtIO drivers: {e}")
     return None
+
+# --- FIX: Consolidated the multiple _generate_mac_address functions into one ---
+def _generate_mac_address():
+    """Generates a random, valid MAC address in the QEMU format."""
+    # QEMU OUI 52:54:00, followed by 3 random bytes
+    mac = [ 0x52, 0x54, 0x00,
+            random.randint(0x00, 0xff),
+            random.randint(0x00, 0xff),
+            random.randint(0x00, 0xff) ]
+    return ':'.join(f'{b:02x}' for b in mac)
+
 
 def create_new_windows_vm():
     """
@@ -110,6 +267,8 @@ def create_new_windows_vm():
 
     while True:
         vm_name = questionary.text("Enter a short name for new VM (e.g., win11):").ask().strip()
+        if not vm_name:
+            continue
         if not re.match(r"^[a-zA-Z0-9_-]+$", vm_name):
             print_warning("Invalid name. Use letters, numbers, hyphens, or underscores.")
         elif os.path.exists(os.path.join(CONFIG['VMS_DIR_WINDOWS'], vm_name)):
@@ -117,27 +276,30 @@ def create_new_windows_vm():
         else:
             break
 
+    virtio_path = _ensure_virtio_drivers()
+    if virtio_path is None: # User cancelled the download or selection
+        print_error("VirtIO driver selection was cancelled. Aborting VM creation.")
+        return
+
     paths = get_vm_paths(vm_name)
     iso_path = find_iso_path()
     if not iso_path:
         return
 
-    virtio_path = find_virtio_iso_path()
-    if virtio_path is None: # User cancelled
-        return
-
     disk_size = get_disk_size("Enter base disk size (e.g., 100G)", "64G")
 
     vm_settings = get_vm_config({"VM_MEM": "8G", "VM_CPU": "4"})
-    
+
+    # Add persistent hardware identifiers
+    vm_settings['uuid'] = str(uuid.uuid4())
+    vm_settings['mac_addr'] = _generate_mac_address()
+
     print_info("Preparing VM files...")
-    # Ensure both the main VM directory and the shared folder are created
     os.makedirs(os.path.join(paths['dir'], 'shared'), exist_ok=True)
-    
+
     with open(paths['config'], 'w', encoding='utf-8') as f:
         json.dump(vm_settings, f, indent=4)
-        
-    # Use secure run_command_live instead of os.system
+
     uefi_vars_path = find_first_existing_path(CONFIG['UEFI_VARS_PATHS'])
     if not uefi_vars_path:
         print_error("Could not find UEFI VARS template file. Aborting.")
@@ -151,36 +313,49 @@ def create_new_windows_vm():
     with open(os.path.join(paths['dir'], 'session.info'), 'w', encoding='utf-8') as f:
         f.write(str(ssh_port))
 
-    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4())}, ssh_port, iso_path=iso_path, virtio_path=virtio_path)
+    qemu_cmd = _get_qemu_command(vm_name, vm_settings, ssh_port, iso_path=iso_path, virtio_path=virtio_path)
 
-    launch_in_new_terminal_and_wait([("Booting from ISO for Installation", qemu_cmd)])
+    debug_mode = questionary.select(
+        "Select a debug mode:",
+        choices=["None", "Show QEMU command", "Verbose Debug (run in this terminal)"]
+    ).ask()
+
+    if debug_mode == "Show QEMU command":
+        print_info("QEMU command:")
+        print(" ".join(qemu_cmd))
+        launch_in_new_terminal_and_wait([("Booting from ISO for Installation", qemu_cmd)])
+    elif debug_mode == "Verbose Debug (run in this terminal)":
+        print_info("Running QEMU in verbose mode...")
+        run_command_live(qemu_cmd)
+    else:
+        launch_in_new_terminal_and_wait([("Booting from ISO for Installation", qemu_cmd)])
 
 
-def _get_qemu_command(vm_name, vm_settings, ids, ssh_port, iso_path=None, virtio_path=None, use_overlay=False):
+def _get_qemu_command(vm_name, vm_settings, ssh_port, iso_path=None, virtio_path=None, use_overlay=False):
     """
     Builds a standardized and performant QEMU command for a Windows VM.
     """
     paths = get_vm_paths(vm_name)
     disk_path = paths['overlay'] if use_overlay and os.path.exists(paths['overlay']) else paths['base']
-    
+
     qemu_cmd = [
         CONFIG["QEMU_BINARY"],
         "-enable-kvm",
         "-m", vm_settings["VM_MEM"],
-        "-smp", f"cores={int(vm_settings['VM_CPU']) // 2},threads=2,sockets=1", # Assume 2 threads per core
-        "-cpu", "host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time", # Hyper-V enlightenments
-        "-uuid", ids['uuid'],
+        "-smp", f"cores={int(vm_settings['VM_CPU']) // 2},threads=2,sockets=1",
+        "-cpu", "host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time",
+        "-uuid", vm_settings['uuid'],
         "-drive", f"if=pflash,format=raw,readonly=on,file={find_first_existing_path(CONFIG['UEFI_CODE_PATHS'])}",
         "-drive", f"if=pflash,format=raw,file={paths['uefi_vars']}",
         "-drive", f"file={disk_path},if=virtio,cache=writeback,aio=threads",
-        "-netdev", f"user,id=n1,hostfwd=tcp::{ssh_port}-:22",
-        "-device", "virtio-net-pci,netdev=n1", # Use virtio-net for better performance
-        "-vga", "virtio",
-        "-display", "sdl,gl=on", # Enable hardware acceleration
+        "-net", f"nic,model=virtio,macaddr={vm_settings['mac_addr']}",
+        "-net", f"user,hostfwd=tcp::{ssh_port}-:22",
+        "-vga", "qxl",
+        "-global", "qxl-vga.vram_size=134217728",
+        "-display", "gtk",
         "-device", "qemu-xhci",
         "-device", "usb-tablet",
         "-pidfile", paths['pid_file'],
-        # Add shared folder support
         "-fsdev", f"local,security_model=passthrough,id=fsdev0,path={os.path.join(paths['dir'], 'shared')}",
         "-device", "virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share",
     ]
@@ -193,6 +368,8 @@ def _get_qemu_command(vm_name, vm_settings, ids, ssh_port, iso_path=None, virtio
     return qemu_cmd
 
 
+# --- FIX: Removed the duplicated and buggy _prepare_run_session function ---
+# The correct version is below.
 def _prepare_run_session(vm_name):
     """Prepares a VM for running by ensuring its files exist."""
     paths = get_vm_paths(vm_name)
@@ -200,23 +377,35 @@ def _prepare_run_session(vm_name):
         print_error(f"Base disk for '{vm_name}' not found. Cannot run.")
         return None, None
 
-    # Load saved config or use defaults
-    defaults = {"VM_MEM": "8G", "VM_CPU": "4"}
+    # Load saved config or create it if it's missing
+    vm_settings = {}
     if os.path.exists(paths['config']):
         try:
             with open(paths['config'], 'r', encoding='utf-8') as f:
-                saved_config = json.load(f)
-            defaults['VM_MEM'] = saved_config.get('VM_MEM', defaults['VM_MEM'])
-            defaults['VM_CPU'] = saved_config.get('VM_CPU', defaults['VM_CPU'])
+                vm_settings = json.load(f)
         except (json.JSONDecodeError, IOError):
             print_warning("Could not load saved config, using defaults.")
+
+    # Use defaults for any missing critical settings
+    if "VM_MEM" not in vm_settings: vm_settings["VM_MEM"] = "8G"
+    if "VM_CPU" not in vm_settings: vm_settings["VM_CPU"] = "4"
+
+    # Ensure persistent hardware identifiers exist and are correct
+    if 'uuid' not in vm_settings:
+        vm_settings['uuid'] = str(uuid.uuid4())
+    if 'mac_addr' not in vm_settings:
+        vm_settings['mac_addr'] = _generate_mac_address()
+
+    # Save the potentially updated config
+    with open(paths['config'], 'w', encoding='utf-8') as f:
+        json.dump(vm_settings, f, indent=4)
 
     # Create overlay if it doesn't exist
     if not os.path.exists(paths['overlay']):
         print_info("No existing session found. Creating a new one (overlay disk).")
         run_command_live(["qemu-img", "create", "-f", "qcow2", "-b", paths['base'], "-F", "qcow2", paths['overlay']], check=True)
-        
-    return paths, defaults
+
+    return paths, vm_settings
 
 
 def run_windows_vm():
@@ -224,38 +413,67 @@ def run_windows_vm():
     Runs an existing Windows VM with clearer session logic.
     """
     clear_screen()
-    print_header("Run Existing Windows VM")
-
-    vm_name = select_from_list([d for d in os.listdir(CONFIG['VMS_DIR_WINDOWS']) if os.path.isdir(os.path.join(CONFIG['VMS_DIR_WINDOWS'], d))], "Choose a VM to run")
+    vm_name = select_vm("Run / Resume")
     if not vm_name:
         return
 
-    paths, defaults = _prepare_run_session(vm_name)
+    if is_vm_running(vm_name):
+        print_error(f"VM '{vm_name}' is already running.")
+        return
+
+    paths, vm_settings = _prepare_run_session(vm_name)
     if not paths:
         return
 
-    vm_settings = get_vm_config(defaults)
+    # Ask for memory and CPU at runtime
+    runtime_settings = get_vm_config({
+        "VM_MEM": vm_settings.get('VM_MEM', '8G'),
+        "VM_CPU": vm_settings.get('VM_CPU', '4')
+    })
+    vm_settings.update(runtime_settings)
+
     ssh_port = find_unused_port()
     print_info(f"SSH will be available on host port {ssh_port}")
     with open(os.path.join(paths['dir'], 'session.info'), 'w', encoding='utf-8') as f:
         f.write(str(ssh_port))
 
-    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4())}, ssh_port, use_overlay=True)
-    launch_in_new_terminal_and_wait([("Booting Windows VM", qemu_cmd)])
+    virtio_path = find_virtio_iso_path()
+    if virtio_path is None:
+        print_error("VirtIO driver selection was cancelled. Aborting VM run.")
+        return
+
+    qemu_cmd = _get_qemu_command(vm_name, vm_settings, ssh_port, use_overlay=True, virtio_path=virtio_path)
+
+    debug_mode = questionary.select(
+        "Select a debug mode:",
+        choices=["None", "Show QEMU command", "Verbose Debug (run in this terminal)"]
+    ).ask()
+
+    if debug_mode == "Show QEMU command":
+        print_info("QEMU command:")
+        print(" ".join(qemu_cmd))
+        launch_in_new_terminal_and_wait([("Booting Windows VM", qemu_cmd)])
+    elif debug_mode == "Verbose Debug (run in this terminal)":
+        print_info("Running QEMU in verbose mode...")
+        run_command_live(qemu_cmd)
+    else:
+        launch_in_new_terminal_and_wait([("Booting Windows VM", qemu_cmd)])
 
 
 def nuke_and_recreate_windows_vm():
     """
-    Nukes the overlay disk of a VM to start a fresh session.
+    Nukes the overlay disk and UEFI vars of a VM to start a fresh session.
     """
     clear_screen()
-    print_header("Nuke & Boot a Fresh Session")
-
-    vm_name = select_from_list([d for d in os.listdir(CONFIG['VMS_DIR_WINDOWS']) if os.path.isdir(os.path.join(CONFIG['VMS_DIR_WINDOWS'], d))], "Choose a VM to nuke")
+    vm_name = select_vm("Nuke & Boot a Fresh Session")
     if not vm_name:
         return
 
-    paths, defaults = _prepare_run_session(vm_name)
+    if is_vm_running(vm_name):
+        print_error(f"Cannot nuke session for '{vm_name}' while it is running. Please stop it first.")
+        return
+
+    paths, vm_settings = _prepare_run_session(vm_name)
     if not paths:
         return
 
@@ -267,12 +485,50 @@ def nuke_and_recreate_windows_vm():
         os.remove(paths['overlay'])
         print_success("Session overlay disk has been nuked.")
 
+    # Reset UEFI variables to factory default
+    uefi_vars_path = find_first_existing_path(CONFIG['UEFI_VARS_PATHS'])
+    if not uefi_vars_path:
+        print_error("Could not find UEFI VARS template file. Aborting.")
+        return
+    run_command_live(["cp", uefi_vars_path, paths['uefi_vars']], quiet=True)
+    print_success("UEFI variables have been reset.")
+
     # Re-create the overlay
     run_command_live(["qemu-img", "create", "-f", "qcow2", "-b", paths['base'], "-F", "qcow2", paths['overlay']], check=True)
 
-    vm_settings = get_vm_config(defaults)
-    qemu_cmd = _get_qemu_command(vm_name, vm_settings, {'uuid': str(uuid.uuid4())}, use_overlay=True)
-    launch_in_new_terminal_and_wait([("Booting Fresh VM Session", qemu_cmd)])
+    # Ask for memory and CPU at runtime
+    runtime_settings = get_vm_config({
+        "VM_MEM": vm_settings.get('VM_MEM', '8G'),
+        "VM_CPU": vm_settings.get('VM_CPU', '4')
+    })
+    vm_settings.update(runtime_settings)
+
+    ssh_port = find_unused_port()
+    print_info(f"SSH will be available on host port {ssh_port}")
+    with open(os.path.join(paths['dir'], 'session.info'), 'w', encoding='utf-8') as f:
+        f.write(str(ssh_port))
+
+    virtio_path = find_virtio_iso_path()
+    if virtio_path is None:
+        print_error("VirtIO driver selection was cancelled. Aborting VM run.")
+        return
+
+    qemu_cmd = _get_qemu_command(vm_name, vm_settings, ssh_port, use_overlay=True, virtio_path=virtio_path)
+
+    debug_mode = questionary.select(
+        "Select a debug mode:",
+        choices=["None", "Show QEMU command", "Verbose Debug (run in this terminal)"]
+    ).ask()
+
+    if debug_mode == "Show QEMU command":
+        print_info("QEMU command:")
+        print(" ".join(qemu_cmd))
+        launch_in_new_terminal_and_wait([("Booting Fresh VM Session", qemu_cmd)])
+    elif debug_mode == "Verbose Debug (run in this terminal)":
+        print_info("Running QEMU in verbose mode...")
+        run_command_live(qemu_cmd)
+    else:
+        launch_in_new_terminal_and_wait([("Booting Fresh VM Session", qemu_cmd)])
 
 
 def delete_windows_vm():
@@ -280,10 +536,12 @@ def delete_windows_vm():
     Completely and permanently deletes a Windows VM directory.
     """
     clear_screen()
-    print_header("Delete Windows VM Completely")
-
-    vm_name = select_from_list([d for d in os.listdir(CONFIG['VMS_DIR_WINDOWS']) if os.path.isdir(os.path.join(CONFIG['VMS_DIR_WINDOWS'], d))], "Choose a VM to delete")
+    vm_name = select_vm("Delete Completely")
     if not vm_name:
+        return
+
+    if is_vm_running(vm_name):
+        print_error(f"Cannot delete '{vm_name}' while it is running. Please stop it first.")
         return
 
     print_warning(f"This will permanently delete the entire VM '{vm_name}', including its virtual disk.\nThis action CANNOT be undone.")
@@ -302,36 +560,41 @@ def windows_vm_menu():
     while True:
         clear_screen()
         console.print("[bold]Windows VM Management[/]")
-        console.print("─────────────────────────────────────────��─────")
+        console.print("───────────────────────────────────────────────")
         choice = questionary.select(
             "Select an option",
             choices=[
                 "1. Create New Windows VM",
                 "2. Run Existing Windows VM",
                 "3. Nuke & Boot a Fresh Session",
-                "4. Transfer Files (SFTP)",
-                "5. Delete Windows VM Completely",
-                "6. Return to Main Menu",
+                "4. Stop a Running VM",
+                "5. Transfer Files (SFTP)",
+                "6. Delete Windows VM Completely",
+                "7. Return to Main Menu",
             ]
         ).ask()
+
+        if not choice: # Handle Ctrl+C
+            break
+
         action_taken = True
-        if choice == "1. Create New Windows VM": create_new_windows_vm()
-        elif choice == "2. Run Existing Windows VM": run_windows_vm()
-        elif choice == "3. Nuke & Boot a Fresh Session": nuke_and_recreate_windows_vm()
-        elif choice == "4. Transfer Files (SFTP)":
-            vm_name = select_from_list([d for d in os.listdir(CONFIG['VMS_DIR_WINDOWS']) if os.path.isdir(os.path.join(CONFIG['VMS_DIR_WINDOWS'], d))], "Choose a VM")
+        if "1." in choice: create_new_windows_vm()
+        elif "2." in choice: run_windows_vm()
+        elif "3." in choice: nuke_and_recreate_windows_vm()
+        elif "4." in choice: stop_vm()
+        elif "5." in choice:
+            vm_name = select_vm("Transfer Files with", running_only=True)
             if vm_name:
                 vm_dir = get_vm_paths(vm_name)['dir']
                 transfer_files_menu(vm_name, "windows", vm_dir)
-        elif choice == "5. Delete Windows VM Completely": delete_windows_vm()
-        elif choice == "6. Return to Main Menu": break
+        elif "6." in choice: delete_windows_vm()
+        elif "7." in choice: break
         else:
             print_warning("Invalid option.")
             action_taken = False
-        
-        if action_taken:
-            questionary.text("\nPress Enter to return to the menu...").ask()
 
+        if action_taken and choice != "7. Return to Main Menu":
+            questionary.text("\nPress Enter to return to the menu...").ask()
 
 
 if __name__ == '__main__':

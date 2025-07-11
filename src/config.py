@@ -52,6 +52,14 @@ DISTRO_INFO = {
         "grub_update": "sudo update-grub",
         "initramfs_update": "sudo mkinitcpio -P"
     },
+
+    "endeavouros": {
+        "cmd": "pacman -Syu --needed",
+        "pkgs": {"qemu": "qemu-desktop", "ovmf": "edk2-ovmf", "mtools": "mtools"},
+        "grub_update": "sudo grub-mkconfig -o /boot/grub/grub.cfg",
+        "initramfs_update": "sudo mkinitcpio -P"
+    },
+
     "debian": {
         "cmd": "apt update && apt install -y",
         "pkgs": {"qemu": "qemu-system-x86 qemu-utils", "ovmf": "ovmf", "mtools": "mtools"},
