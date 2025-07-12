@@ -313,8 +313,6 @@
 			<false/>
 		</dict>
 	</dict>
-
-
 	<key>DeviceProperties</key>
 <dict>
 	<key>Add</key>
@@ -331,17 +329,6 @@
 <string>BCM4360 802.11ac Wireless Network Adapter</string>
 <key>name</key>
 <string>Airport</string>
-</dict>
-<key>PciRoot(0x0)/Pci(0x2,0x0)</key>
-<dict>
-	<key>enable-hdmi20</key>
-<data>AQAAAA==</data>
-<key>framebuffer-patch-enable</key>
-<data>AQAAAA==</data>
-<key>framebuffer-stolenmem</key>
-<data>AAAACA==</data>
-<key>vram-size</key>
-<data>//8AAA==</data>
 </dict>
 </dict>
 <key>Delete</key>
@@ -1781,45 +1768,44 @@
 			<key>TimerResolution</key>
 			<integer>50000</integer>
 		</dict>
+
 		<key>Output</key>
-		<dict>
-			<key>ClearScreenOnModeSwitch</key>
-			<false/>
-			<key>ConsoleFont</key>
-			<string></string>
-			<key>ConsoleMode</key>
-			<string></string>
-			<key>DirectGopRendering</key>
-			<false/>
-			<key>ForceResolution</key>
-			<false/>
-			<key>GopBurstMode</key>
-			<false/>
-			<key>GopPassThrough</key>
-			<string>Disabled</string>
-			<key>IgnoreTextInGraphics</key>
-			<false/>
-			<key>InitialMode</key>
-			<string>Auto</string>
-			<key>ProvideConsoleGop</key>
-			<true/>
-			<key>ReconnectGraphicsOnConnect</key>
-			<false/>
-			<key>ReconnectOnResChange</key>
-			<false/>
-			<key>ReplaceTabWithSpace</key>
-			<false/>
-			<key>Resolution</key>
-			<string>1920x1080@32</string>
-			<key>SanitiseClearScreen</key>
-			<false/>
-			<key>TextRenderer</key>
-			<string>BuiltinGraphics</string>
-			<key>UIScale</key>
-			<integer>0</integer>
-			<key>UgaPassThrough</key>
-			<false/>
-		</dict>
+	<dict>
+	<key>ClearScreenOnModeSwitch</key>
+<false/>
+<key>ConsoleFont</key>
+<string></string>
+<key>ConsoleMode</key>
+<string></string>
+<key>DirectGopRendering</key>
+<false/>
+<key>ForceResolution</key>
+<false/>
+<key>GopBurstMode</key>
+<false/>
+<key>GopPassThrough</key>
+<string>Disabled</string>
+<key>IgnoreTextInGraphics</key>
+<false/>
+<key>InitialMode</key>
+<string>Auto</string>
+<key>ProvideConsoleGop</key>
+<true/>
+<key>ReconnectGraphicsOnConnect</key>
+<false/>
+<key>ReconnectOnResChange</key>
+<false/>
+<key>ReplaceTabWithSpace</key>
+<false/>
+<key>SanitiseClearScreen</key>
+<false/>
+<key>TextRenderer</key>
+<string>BuiltinGraphics</string>
+<key>UIScale</key>
+<integer>0</integer>
+<key>UgaPassThrough</key>
+<false/>
+</dict>
 		<key>ProtocolOverrides</key>
 		<dict>
 			<key>AppleAudio</key>

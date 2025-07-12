@@ -313,8 +313,6 @@
 			<false/>
 		</dict>
 	</dict>
-
-
 	<key>DeviceProperties</key>
 <dict>
 	<key>Add</key>
@@ -331,17 +329,6 @@
 <string>BCM4360 802.11ac Wireless Network Adapter</string>
 <key>name</key>
 <string>Airport</string>
-</dict>
-<key>PciRoot(0x0)/Pci(0x2,0x0)</key>
-<dict>
-	<key>enable-hdmi20</key>
-<data>AQAAAA==</data>
-<key>framebuffer-patch-enable</key>
-<data>AQAAAA==</data>
-<key>framebuffer-stolenmem</key>
-<data>AAAACA==</data>
-<key>vram-size</key>
-<data>//8AAA==</data>
 </dict>
 </dict>
 <key>Delete</key>
@@ -377,7 +364,7 @@
 				<key>Comment</key>
 				<string>SMC emulator</string>
 				<key>Enabled</key>
-				<false/>
+				<true/>
 				<key>ExecutablePath</key>
 				<string>Contents/MacOS/VirtualSMC</string>
 				<key>MaxKernel</key>

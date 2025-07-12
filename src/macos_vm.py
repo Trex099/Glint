@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 from config import CONFIG, DISTRO_INFO
 from file_transfer import transfer_files_menu
 from core_utils import (
@@ -37,11 +38,12 @@ console = Console()
 
 
 MACOS_RECOMMENDED_MODELS = {
+    "Sequoia (15)": "iMacPro1,1",
     "Sonoma (14)": "iMacPro1,1",
     "Ventura (13)": "MacPro7,1",
-    "Monterey (12)": "iMac20,1",
-    "Big Sur (11)": "iMac20,1",
-    "Catalina (10.15)": "iMac19,1",
+    "Monterey (12)": "MacBookPro16,1",
+    "Big Sur (11)": "MacBookPro16,1",
+    "Catalina (10.15)": "MacBookPro15,1",
 }
 
 
@@ -146,7 +148,7 @@ def stop_vm(vm_name=None, force=False):
 
 def _get_macos_qemu_command(vm_name, vm_settings, mac_addr, ssh_port, installer_path=None, passthrough_devices=None, use_vnc=False, vnc_port=None, resolution=None):
     """
-    Builds the QEMU command, supporting standard, passthrough, VNC, and custom resolutions.
+    Builds the QEMU command, supporting standard, passthrough, and VNC display modes with maximum compatibility.
     """
     paths = _get_vm_paths(vm_name)
     cores = vm_settings.get('cpu', '8')
@@ -176,7 +178,7 @@ def _get_macos_qemu_command(vm_name, vm_settings, mac_addr, ssh_port, installer_
     net_config = f"user,id=net0,hostfwd=tcp::{ssh_port}-:22"
     qemu_cmd.extend(["-netdev", net_config, "-device", f"vmxnet3,netdev=net0,mac={mac_addr}"])
 
-    # --- Display Logic Overhaul: Consolidated & Robust ---
+    # --- Display Logic: Final Version ---
     if passthrough_devices:
         print_info("Attaching physical PCI passthrough devices...")
         for addr in passthrough_devices:
@@ -184,21 +186,18 @@ def _get_macos_qemu_command(vm_name, vm_settings, mac_addr, ssh_port, installer_
         
         if use_vnc and vnc_port:
             print_info("Creating a virtual display for VNC...")
-            # Virtual SVGA for VNC, with sufficient VRAM
-            qemu_cmd.extend(["-device", "vmware-svga,vgamem_mb=256"]) 
+            # We still need a device for VNC to bind to
+            qemu_cmd.extend(["-device", "vmware-svga,vgamem_mb=256"])
             qemu_cmd.extend(["-vnc", f"0.0.0.0:{vnc_port - 5900}"])
         else:
-            # True passthrough, no virtual display
             qemu_cmd.extend(["-display", "none"])
     else:
-        # Standard virtual graphics: GTK with custom resolution if provided
-        display_params = "gtk,gl=on,show-cursor=off"
-        if resolution:
-            width, height = resolution.split('x')
-            display_params += f",width={width},height={height}"
-        
-        qemu_cmd.extend(["-device", "vmware-svga,vgamem_mb=256"]) # Sufficient VRAM for standard VM
-        qemu_cmd.extend(["-display", display_params])
+        # Standard virtual graphics. We must disable the default VGA device
+        # to ensure macOS only sees our intended vmware-svga device.
+        qemu_cmd.extend(["-vga", "none"])
+        qemu_cmd.extend(["-device", "vmware-svga,vgamem_mb=256"])
+        qemu_cmd.extend(["-display", "gtk,gl=on,show-cursor=off"])
+
 
     qemu_cmd.extend([
         "-device", "qemu-xhci,id=xhci",
@@ -448,16 +447,15 @@ def _handle_dmg_conversion(dmg_path):
         print_info(f"Converting '{os.path.basename(dmg_path)}' to '.img' format. This may take a moment...")
         convert_cmd = ["qemu-img", "convert", "-O", "raw", dmg_path, img_path]
         
-        # Use run_command_live to show progress
-        if run_command_live(convert_cmd, check=True):
+        # Use run_command_live and check its return value.
+        # It returns None ONLY on failure. It returns an empty string "" on silent success.
+        result = run_command_live(convert_cmd, check=True)
+        if result is not None:
             print_success("Conversion successful.")
             return img_path
         else:
             print_error("Conversion failed. Please check the output above.")
             return None
-    else:
-        print_info("Conversion declined. You cannot proceed with a .dmg file.")
-        return None
 
 def _get_installer_path():
     """Guides the user to select, download, or specify a path for the macOS installer."""
@@ -494,10 +492,13 @@ def _get_installer_path():
                 return selected_option
 
         elif selected_option.startswith("Download"):
-            run_command_live([sys.executable, CONFIG['FETCHMACOS_SCRIPT']], check=False)
-            basesystem_path = "BaseSystem.dmg"
+            # We use subprocess.run directly here to let the interactive script
+            # control the terminal, which is necessary for its menu and progress bar.
+            subprocess.run([sys.executable, CONFIG['FETCHMACOS_SCRIPT']], check=False)
+            # Use an absolute path to be consistent with the other logic paths.
+            basesystem_path = os.path.abspath("BaseSystem.dmg")
             if os.path.exists(basesystem_path):
-                print_success(f"Download script finished. Using '{basesystem_path}'.")
+                print_success(f"Download script finished. Using '{os.path.basename(basesystem_path)}'.")
                 # Now handle the downloaded DMG
                 converted_path = _handle_dmg_conversion(basesystem_path)
                 if converted_path:
@@ -547,7 +548,7 @@ def _get_smbios_model_choice():
                                      "Select the macOS version you are installing")
         return MACOS_RECOMMENDED_MODELS.get(os_choice) if os_choice else None
     while True:
-        model = questionary.text("Enter Mac model (Recommended, MacBookPro16,1):").ask().strip()
+        model = questionary.text("Enter Mac model (Recommended, iMacPro1,1 or MacPro7,1):").ask().strip()
         if model:
             return model
         print_warning("Model cannot be empty.")
@@ -907,15 +908,20 @@ def nuke_and_recreate_macos_vm():
     # --- Step 1: Ask the user what level of "nuke" they want ---
     clear_screen()
     print_header(f"Nuke Options for '{vm_name}'")
+
+    # Create the styled text object for the second choice
+    reset_text = Text("2. Factory Reset macOS (Deletes users & data, keeps OS) ", style="default")
+    reset_text.append("(IN DEVELOPMENT NOT RECOMMENDED)", style="bold bright_red")
+
     nuke_choice = questionary.select(
         "What do you want to do?",
         choices=[
             questionary.Choice(
-                "1. Regenerate Identity Only (Safe, for iServices)",
+                title="1. Regenerate Identity Only (Safe, for iServices)",
                 value="identity"
             ),
             questionary.Choice(
-                "2. Factory Reset macOS (Deletes users & data, keeps OS)",
+                title=reset_text,
                 value="factory_reset"
             ),
             questionary.Separator(),

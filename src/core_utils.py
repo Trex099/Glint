@@ -69,6 +69,9 @@ def get_host_screen_resolution():
         # This can fail on systems without a running X server (headless)
         return None
 
+      
+      
+      
 def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
     """
     Runs a command and prints its output live, with improved error handling.
@@ -85,45 +88,54 @@ def run_command_live(cmd_list, as_root=False, check=True, quiet=False):
         process = subprocess.Popen(
             cmd_list,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE if quiet else subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            encoding='utf-8'
+            # Use errors='ignore' to prevent crashes on weird characters from subprocesses
+            encoding='utf-8',
+            errors='ignore'
         )
 
         output_lines = []
-        with process.stdout:
-            for line in iter(process.stdout.readline, ''):
-                if not quiet:
-                    console.print(f"  {line.strip()}", highlight=False)
-                output_lines.append(line)
-        
+        # Do NOT use a 'with' block on process.stdout, as it closes the stream.
+        # We iterate over the output line by line until the process ends.
+        for line in iter(process.stdout.readline, ''):
+            if not quiet:
+                console.print(f"  {line.strip()}", highlight=False)
+            output_lines.append(line)
+
+        # Wait for the process to terminate and get the return code and stderr
         return_code = process.wait()
+        stderr_output = process.stderr.read()
+
+        # Join the captured lines to form the full stdout
+        stdout_output = "".join(output_lines)
 
         if check and return_code != 0:
-            stderr_output = process.stderr.read() if quiet else "".join(output_lines)
+            # Raise an error, making sure to include the captured stderr
             raise subprocess.CalledProcessError(
-                return_code, cmd_list, output="".join(output_lines), stderr=stderr_output
+                return_code, cmd_list, output=stdout_output, stderr=stderr_output
             )
         
-        return "".join(output_lines)
+        return stdout_output
 
     except FileNotFoundError:
         print_error(f"Command not found: '{cmd_list[0]}'. Please ensure it is installed and in your PATH.")
         return None
     except subprocess.CalledProcessError as e:
         print_error(f"Command failed with exit code {e.returncode}: {e.cmd}")
-        if not quiet:
-            # Output was already printed live
-            pass
-        elif e.stderr:
-            print_error(f"Stderr:\n{e.stderr.strip()}")
-        elif e.output:
+        # ALWAYS print stderr if it exists, as it's the most likely source of the error
+        if e.stderr:
+            error_console.print(f"[bold red]Error Details (stderr):[/]\n{e.stderr.strip()}")
+        elif e.output and not quiet:
+            # If no stderr, but there was output, show that.
             print_error(f"Output:\n{e.output.strip()}")
         return None
     except Exception as e:
         print_error(f"An unexpected error occurred while running command: {e}")
         return None
+
+      
 
 def run_guestfs_command(cmd_list, as_root=True, check=True, quiet=False):
     """
@@ -755,20 +767,16 @@ def get_cpu_vendor():
     except IOError:
         return "Unknown"
     return "Unknown"
-
-      
+         
       
 def is_apfs_support_enabled():
     if not shutil.which("guestfish"): return False
     try:
         # A simple, quick check.
-        result = subprocess.run(['sudo', 'guestfish', '-a', '/dev/null', '-i', 'available-filesystems'], capture_output=True, text=Ture, check=True, timeout=60)
+        result = subprocess.run(['sudo', 'guestfish', '-a', '/dev/null', '-i', 'available-filesystems'], capture_output=True, text=True, check=True, timeout=60)
         return 'apfs' in result.stdout
     except Exception:
-        return False
-
-    
-    
+        return False   
 
 # --- Passthrough Safety Checks ---
 

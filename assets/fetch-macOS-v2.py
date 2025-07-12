@@ -24,6 +24,7 @@ import random
 import struct
 import string
 import sys
+import questionary
 
 try:
     from urllib.request import Request, HTTPError, urlopen
@@ -234,23 +235,41 @@ def save_image(url, sess, filename='', directory=''):
                 break
             fh.write(chunk)
             size += len(chunk)
+            
+            # --- CORRECTED BLOCK START ---
             try:
-                terminalsize = max(os.get_terminal_size().columns - TERMINAL_MARGIN, 0)
+                if sys.stdout.isatty():
+                    terminalsize = max(os.get_terminal_size().columns - TERMINAL_MARGIN, 0)
+                else:
+                    terminalsize = 80
             except OSError:
                 terminalsize = 80
+            # --- CORRECTED BLOCK END ---
+
             if oldterminalsize != terminalsize:
                 print(f'\r{"":<{terminalsize}}', end='')
                 oldterminalsize = terminalsize
+            
+            # Build the entire progress line as a single string before printing
             if totalsize > 0:
                 progress = size / totalsize
                 barwidth = terminalsize // 3
-                print(f'\r{size / (2**20):.1f}/{totalsize / (2**20):.1f} MB ', end='')
+                
+                # Start building the string
+                progress_line = f'{size / (2**20):.1f}/{totalsize / (2**20):.1f} MB '
+                
                 if terminalsize > 55:
-                    print(f'|{"=" * int(barwidth * progress):<{barwidth}}|', end='')
-                print(f' {progress*100:.1f}% downloaded', end='')
+                    progress_line += f'|{"=" * int(barwidth * progress):<{barwidth}}|'
+                
+                progress_line += f' {progress*100:.1f}% downloaded'
+                
+                # Pad the string to clear the rest of the line
+                print(f'\r{progress_line:<{terminalsize}}', end='')
+
             else:
                 # Fallback if Content-Length isn't available
                 print(f'\r{size / (2**20)} MB downloaded...', end='')
+            
             sys.stdout.flush()
         print('\nDownload complete!')
 
@@ -262,9 +281,18 @@ def verify_image(dmgpath, cnkpath):
 
     with open(dmgpath, 'rb') as dmgf:
         for cnkcount, (cnksize, cnkhash) in enumerate(verify_chunklist(cnkpath), 1):
-            terminalsize = max(os.get_terminal_size().columns - TERMINAL_MARGIN, 0)
-            print(f'\r{f"Chunk {cnkcount} ({cnksize} bytes)":<{terminalsize}}', end='')
-            sys.stdout.flush()
+            # --- CORRECTED BLOCK START ---
+            try:
+                if sys.stdout.isatty():
+                    terminalsize = max(os.get_terminal_size().columns - TERMINAL_MARGIN, 0)
+                    print(f'\r{f"Chunk {cnkcount} ({cnksize} bytes)":<{terminalsize}}', end='')
+                else:
+                    print('.', end='')
+                sys.stdout.flush()
+            except OSError:
+                pass
+            # --- CORRECTED BLOCK END ---
+
             cnk = dmgf.read(cnksize)
             if len(cnk) != cnksize:
                 raise RuntimeError(f'Invalid chunk {cnkcount} size: expected {cnksize}, read {len(cnk)}')
@@ -532,8 +560,6 @@ def main():
         return action_guess(args)
 
     # No action specified, so present a download menu instead
-    # https://github.com/acidanthera/OpenCorePkg/blob/master/Utilities/macrecovery/boards.json
-    # https://github.com/corpnewt/gibMacOS
     products = [
             {"name": "High Sierra (10.13)", "b": "Mac-7BA5B2D9E42DDD94", "m": "00000000000J80300", "short": "high-sierra"},
             {"name": "Mojave (10.14)", "b": "Mac-7BA5B2DFE22DDD8C", "m": "00000000000KXPG00", "short": "mojave"},
@@ -544,30 +570,26 @@ def main():
             {"name": "Sonoma (14)  - RECOMMENDED", "b": "Mac-827FAC58A8FDFA22", "m": "00000000000000000", "short": "sonoma"},
             {"name": "Sequoia (15) ", "b": "Mac-7BA5B2D9E42DDD94", "m": "00000000000000000", "short": "sequoia", "os_type": "latest"},
     ]
-    for index, product in enumerate(products):
-        name = product["name"]
-        print('%s. %12s' % (index + 1, name))
-    # test locally using args.shortname = 'mojave'
+    
+    product = None
     if not args.shortname or args.shortname == '':
-        answer = input('\nChoose a product to download (1-%s): ' % len(products))
-        try:
-            index = int(answer) - 1
-            if index < 0:
-                raise ValueError
-        except (ValueError, IndexError):
-            pass
+        choices = [questionary.Choice(title=p["name"], value=p) for p in products]
+        product = questionary.select(
+            "Choose a product to download:",
+            choices=choices,
+            use_indicator=True
+        ).ask()
+        if product is None:
+            print("Download cancelled.")
+            sys.exit(0)
     else:
-        index = 0
-        for product in products:
-            if args.shortname == product['short']:
-                break
-            else:
-                index = index+1
-    product = products[index]
-    try:
-        os_type = product["os_type"]
-    except:
-        os_type = "default"
+        # Fallback for when --shortname is used
+        product = next((p for p in products if p['short'] == args.shortname), None)
+        if product is None:
+             print(f"Error: Invalid shortname '{args.shortname}'")
+             sys.exit(1)
+
+    os_type = product.get("os_type", "default")
     args = gdata(mlb = product["m"], board_id = product["b"], diagnostics =
             False, os_type = os_type, verbose=False, basename="", outdir=".")
     action_download(args)
