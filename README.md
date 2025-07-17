@@ -22,7 +22,53 @@ This isn't just another VM manager. Glint is a smart, user-friendly tool built t
 
 ---
 
-## ✨ Core Features
+## 📚 Table of Contents
+
+- [🔥 Glint Highlights](#-glint-highlights)
+- [⚙️ Core Workflow Features](#-core-workflow-features)
+- [🖼️ A Glimpse of Glint](#️-a-glimpse-of-glint)
+- [🚀 Privacy Modes & Reset Options](#-how-it-works-the-nuke-button--the-factory-reset)
+- [🛠️ Getting Started](#️-getting-started)
+- [📂 Advanced Passthrough](#️-gpu-passthrough-made-easy)
+- [💾 File Transfer (SFTP)](#-file-transfer-sftp)
+- [✅ Recent Upgrades](#-recently-shipped-upgrades)
+- [🔮 Upcoming Features](#-coming-next)
+- [❤️ Credits](#️-credits-and-acknowledgements)
+- [⚖️ Legal Note](#️-legality-of-macos-on-non-apple-hardware)
+- [📜 License](#-license)
+
+---
+
+## 🔥 Glint Highlights (2025 Update)
+
+Glint is now a full-scale, modular VM manager with features rivaling enterprise hypervisors — but built for privacy-focused developers, researchers, and power users.
+
+- 🗃️ **Storage Pool System**  
+  Named pools with encryption, quotas, backups, and health monitoring. Migrate VMs between pools or create RAM-only temp pools.
+
+- 💽 **Live Disk Resize (No Shutdown Needed)**  
+  Expand disk space *while the VM is running*, with rollback support and real-time progress display.
+
+- 🔐 **LUKS Disk Encryption + Auto-Unlock**  
+  Full-disk encryption with passphrase rotation, automatic unlock, and UI integration.
+
+- 🌐 **Privacy Mode + Disposable VMs**  
+  Route traffic through Tor, rotate identity, regenerate MAC/UUID/SMBIOS, auto-wipe overlays — forensics-clean in seconds.
+
+- 🧠 **Branching Snapshot System**  
+  Tree-based snapshots with metadata, merging, retention policy, and backup support.
+
+- 🎮 **Advanced GPU/USB/NVMe Passthrough (Auto Setup)**  
+  Host prep, VFIO, display fixes, and rollback — all automated, with no manual kernel patching.
+
+- 📈 **Real-Time Disk I/O Monitoring**  
+  Live stats (IOPS, latency, throughput) + historical tracking + performance recommendations.
+
+All features are integrated into a clean, modular CLI/TUI — no bloat, no noise, just control.
+
+---
+
+## ✨ Core Workflow Features
 
 Glint is packed with features designed to make VM management powerful, flexible, and simple.
 
@@ -165,11 +211,25 @@ We do not provide support for and are not responsible for any legal issues that 
 
 ---
 
+## ✅ Recently Shipped Upgrades
+
+Glint 2025 brings a massive new architecture upgrade:
+
+- 📂 Full storage pool management (creation, quota, migration, backup)
+- 🔐 LUKS encryption with passphrase/key control
+- 💽 Live disk resizing
+- 📸 Advanced branching snapshots with metadata & merging
+- 📈 Disk performance dashboard with real-time and historical metrics
+- 🗑️ Disposable VMs with complete identity regeneration
+- 🔧 VFIO permission automation, USB cursor passthrough fix
+- 🧼 Persistent session management and crash recovery
+
+---
+
 ## 🔮 Upcoming Features
 
 Glint is an actively developed project. Here's what we have planned for the future:
 
-*   **Snapshot Management:** The ability to take and restore snapshots of your persistent VM states.
 *   **GUI Frontend:** A simple graphical user interface for users who prefer a visual workflow.
 
 ---
