@@ -1,0 +1,35 @@
+# ISO files (large installer images)
+*.iso
+*.ISO
+
+# VM storage directories (local development)
+vms_linux/
+vms_macos/
+vms_windows/
+
+# Logs
+logs/
+*.log
+
+# Tests (development only)
+tests/
+__pycache__/
+*.pyc
+*.pyo
+
+# Python cache
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+/tmp/
+
+# Session files
+SESSION_SUMMARY.md
